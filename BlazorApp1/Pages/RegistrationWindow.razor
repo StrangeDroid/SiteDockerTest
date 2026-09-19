@@ -5,6 +5,7 @@
 @using Microsoft.Extensions.Localization
 @inject IStringLocalizer<RegistrationWindow> Localizer
 @using BlazorApp1.Data
+@inject ICurrentUserService CurrentUserSvc
 @code {
     private bool isRegistering = false;
     private string debug = "";
@@ -70,8 +71,10 @@
                 insertCmd.Parameters.AddWithValue("@exp", expires);
                 await insertCmd.ExecuteNonQueryAsync();
 
-                await JS.InvokeVoidAsync("localStorage.setItem", "auth_token", token);
-                UserSession.CurrentUser = await UserRepository.LoadUserById(userId, conn);
+
+                await JS.InvokeVoidAsync("CookieHelper.set", "authToken", token, 1);
+                CurrentUserSvc.User = await UserRepository.LoadUserById(userId, conn);
+                CurrentUserSvc.User.IsNewUser = false;
 
 
                 Navigation.NavigateTo("/main");
@@ -150,33 +153,49 @@
                 int priceSell = typeReader.GetInt32(4);     // ← добавлено
 
                 await typeReader.CloseAsync(); // ← await обязательно
+                var flowerInsert = new MySqlCommand(
+                "INSERT INTO flowers (user_id, type_id, hp, pot_slot) VALUES (@uid, @type, @hp, @slot)", conn);
+                flowerInsert.Parameters.AddWithValue("@uid", userId);
+                flowerInsert.Parameters.AddWithValue("@type", typeId);
+                flowerInsert.Parameters.AddWithValue("@hp", 9);
+                flowerInsert.Parameters.AddWithValue("@slot", 0);
+                await flowerInsert.ExecuteNonQueryAsync();
 
-                for (int i = 0; i < 3; i++)
-                {
-                    // Добавление в БД
-                    var flowerInsert = new MySqlCommand(
-                        "INSERT INTO flowers (user_id, type_id, hp, pot_slot) VALUES (@uid, @type, @hp, @slot)", conn);
-                    flowerInsert.Parameters.AddWithValue("@uid", userId);
-                    flowerInsert.Parameters.AddWithValue("@type", typeId);
-                    flowerInsert.Parameters.AddWithValue("@hp", 15);
-                    flowerInsert.Parameters.AddWithValue("@slot", i);
-                    await flowerInsert.ExecuteNonQueryAsync();
+                // Добавление в список в C#
+                flowers.Add(new Flower
+                    {
+                        TypeId = typeId,
+                        DisplayName = displayName,
+                        CodeName = codeName,
+                        Hp = 9,
+                        MaxHp = 15,
+                        Slot = 0,
+                        PriceBuy = priceBuy,     // ← добавлено
+                        PriceSell = priceSell    // ← добавлено
+                    });
+                var flowerInsert2 = new MySqlCommand(
+                "INSERT INTO flowers (user_id, type_id, hp, pot_slot) VALUES (@uid, @type, @hp, @slot)", conn);
+                flowerInsert2.Parameters.AddWithValue("@uid", userId);
+                flowerInsert2.Parameters.AddWithValue("@type", typeId+1);
+                flowerInsert2.Parameters.AddWithValue("@hp", 9);
+                flowerInsert2.Parameters.AddWithValue("@slot", 1);
+                await flowerInsert2.ExecuteNonQueryAsync();
 
-                    // Добавление в список в C#
-                    flowers.Add(new Flower
-                        {
-                            TypeId = typeId,
-                            DisplayName = displayName,
-                            CodeName = codeName,
-                            Hp = 15,
-                            MaxHp = 15,
-                            Slot = i,
-                            PriceBuy = priceBuy,     // ← добавлено
-                            PriceSell = priceSell    // ← добавлено
-                        });
-                }
+                // Добавление в список в C#
+                flowers.Add(new Flower
+                    {
+                        TypeId = typeId+1,
+                        DisplayName = displayName,
+                        CodeName = codeName,
+                        Hp = 9,
+                        MaxHp = 15,
+                        Slot = 1,
+                        PriceBuy = priceBuy,     // ← добавлено
+                        PriceSell = priceSell    // ← добавлено
+                    });
+
             }
-            UserSession.CurrentUser = new User
+            CurrentUserSvc.User = new User
                 {
                     Id = userId,
                     Username = regUsername,
@@ -186,6 +205,7 @@
                     Flowers = flowers
                 };
 
+            CurrentUserSvc.User.IsNewUser = true;
 
             // ❗ Удаляем старые токены на всякий случай (если регаешься повторно под тем же user_id)
             var deleteCmd = new MySqlCommand("DELETE FROM authtokens WHERE user_id = @uid", conn);
@@ -203,7 +223,7 @@
             await insertTokenCmd.ExecuteNonQueryAsync();
 
             // Сохраняем токен в localStorage (через JS позже)
-            await JS.InvokeVoidAsync("localStorage.setItem", "auth_token", token);
+            await JS.InvokeVoidAsync("CookieHelper.set", "authToken", token, 1);
 
             debug = "✅ Регистрация завершена";
             isRegistering = false;

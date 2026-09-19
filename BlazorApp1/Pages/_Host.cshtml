@@ -15,9 +15,19 @@
     <link rel="icon" type="image/png" href="favicon.png"/>
     <component type="typeof(HeadOutlet)" render-mode="ServerPrerendered" />
 </head>
+@* <script>
+    const DESIGN_W = 800;
+    function updateScale() {
+      const f = document.querySelector('.game-frame');
+      if (!f) return;
+      const s = f.parentElement.clientWidth / DESIGN_W;
+      f.style.setProperty('--game-scale', s);
+    }
+    window.addEventListener('resize', updateScale);
+    window.addEventListener('load',   updateScale);
+</script> *@
 <body>
     <component type="typeof(App)" render-mode="ServerPrerendered" />
-
    @*  <div id="blazor-error-ui">
         <environment include="Staging,Production">
             An error has occurred. This application may no longer respond until reloaded.
@@ -30,19 +40,23 @@
     </div>
  *@
     <script src="_framework/blazor.server.js"></script>
+
+    <script src="cookies.js"></script>
+
+    <script src="audio.js"></script>
+
+    @* <script>
+        function updateSliderBackground(slider) {
+          const val = (slider.value - slider.min) / (slider.max - slider.min) * 100;
+          slider.style.backgroundSize = val + '% 100%';
+        }
+
+        document.addEventListener("DOMContentLoaded", () => {
+          document.querySelectorAll('.volume-slider').forEach(slider => {
+            updateSliderBackground(slider);
+            slider.addEventListener('input', () => updateSliderBackground(slider));
+          });
+        });
+    </script> *@
 </body>
 </html>
-
-<script>
-    function updateSliderBackground(slider) {
-      const val = (slider.value - slider.min) / (slider.max - slider.min) * 100;
-      slider.style.backgroundSize = val + '% 100%';
-    }
-
-    document.addEventListener("DOMContentLoaded", () => {
-      document.querySelectorAll('.volume-slider').forEach(slider => {
-        updateSliderBackground(slider);
-        slider.addEventListener('input', () => updateSliderBackground(slider));
-      });
-    });
-</script>

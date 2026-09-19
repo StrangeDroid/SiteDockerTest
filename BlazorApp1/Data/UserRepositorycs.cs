@@ -36,8 +36,8 @@ namespace BlazorApp1.Data
                 flowers.Add(new Flower
                 {
                     Id = fReader.GetInt32(0),              // ← теперь тоже читаем ID цветка
-                    Hp = 9,
-                    MaxHp = fReader.GetInt32(1),
+                    Hp = fReader.GetInt32(1),
+                    MaxHp = 15,
                     Slot = fReader.GetInt32(2),
                     TypeId = fReader.GetInt32(3),
                     DisplayName = fReader.GetString(4),

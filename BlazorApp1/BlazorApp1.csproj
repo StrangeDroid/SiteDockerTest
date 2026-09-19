@@ -14,8 +14,8 @@
 		<PackageReference Include="System.Text.Json" Version="7.0.2" />
 	</ItemGroup>
 	<ItemGroup>
+	  <Folder Include="wwwroot\images\flowers\spathiphyllum_reactions\" />
 	  <Folder Include="wwwroot\images\flowers_shop\" />
-	  <Folder Include="wwwroot\images\icons\" />
 	</ItemGroup>
 	<ItemGroup>
 	  <EmbeddedResource Update="Resources\Pages\Game.resx">

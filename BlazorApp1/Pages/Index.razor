@@ -4,24 +4,24 @@
 @using MySql.Data.MySqlClient
 @using BlazorApp1.Data
 @using System.Diagnostics;
+@inject ICurrentUserService CurrentUserSvc
 
 @code {
     private bool _navigated = false;
 
     protected override async Task OnAfterRenderAsync(bool firstRender)
     {
-        if (!firstRender || _navigated) return;
+        var token = await JS.InvokeAsync<string>("CookieHelper.get", "authToken");
+        if (string.IsNullOrWhiteSpace(token))
+            NavigateToRegistration();
 
+        await CheckTokenInDb(token);
+    }
+
+    private async Task CheckTokenInDb(string token)
+    {
         try
         {
-            var token = await JS.InvokeAsync<string>("localStorage.getItem", "auth_token");
-            if (string.IsNullOrWhiteSpace(token))
-            {
-                Navigation.NavigateTo("/registration");
-                _navigated = true;
-                return;
-            }
-
             var connStr = "Server=31.31.197.28;Port=3310;Database=u3126643_flowers_db;User=u3126643_user_app;Password=xxxKKTX6815!;Charset=utf8mb4;SslMode=none;";
             using var conn = new MySqlConnection(connStr);
             await conn.OpenAsync();
@@ -39,28 +39,33 @@
                 int userId = reader.GetInt32(0);
                 reader.Close(); // обязательно закрываем перед следующим запросом
 
-                UserSession.CurrentUser = await UserRepository.LoadUserById(userId, conn);
+                CurrentUserSvc.User = await UserRepository.LoadUserById(userId, conn);
 
-                Debug.WriteLine($" User loaded: {UserSession.CurrentUser.Username}, Email: {UserSession.CurrentUser.Email}, Coins: {UserSession.CurrentUser.Coins}");
-                foreach (var flower in UserSession.CurrentUser.Flowers)
+                Debug.WriteLine($" User loaded: {CurrentUserSvc.User.Username}, Email: {CurrentUserSvc.User.Email}, Coins: {CurrentUserSvc.User.Coins}");
+                foreach (var flower in CurrentUserSvc.User.Flowers)
                 {
                     Debug.WriteLine($" 🌸 Flower slot {flower.Slot}: {flower.DisplayName} (CodeName: {flower.CodeName}, HP: {flower.Hp}/15)");
                 }
 
 
+
+                CurrentUserSvc.User.IsNewUser = false;
+
                 Navigation.NavigateTo("/main");
             }
             else
             {
-                Navigation.NavigateTo("/registration");
+                NavigateToRegistration();
             }
-
-            _navigated = true;
         }
         catch
         {
-            Navigation.NavigateTo("/registration");
-            _navigated = true;
+            NavigateToRegistration();
         }
+    }
+    private void NavigateToRegistration()
+    {
+        _navigated = true;
+        Navigation.NavigateTo("/registration");
     }
 }

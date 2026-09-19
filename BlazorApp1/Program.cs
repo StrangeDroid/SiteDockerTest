@@ -1,5 +1,6 @@
 ﻿using BlazorApp1.Data;
 using Microsoft.AspNetCore.Components;
+using Microsoft.AspNetCore.Components.Authorization;
 using Microsoft.AspNetCore.Components.Web;
 using Microsoft.AspNetCore.Localization;
 using System.Globalization;
@@ -16,6 +17,10 @@ builder.Services.AddHttpContextAccessor();
 builder.Services.AddRazorPages();
 builder.Services.AddServerSideBlazor();
 
+
+builder.Services.AddScoped<AuthenticationStateProvider, CookieAuthStateProvider>();
+builder.Services.AddAuthorizationCore();
+
 builder.Services.Configure<RequestLocalizationOptions>(options =>
 {
     var supportedCultures = new[] { new CultureInfo("ru"), new CultureInfo("en") };
@@ -24,6 +29,12 @@ builder.Services.Configure<RequestLocalizationOptions>(options =>
     options.SupportedUICultures = supportedCultures;
     options.RequestCultureProviders = new[] { new CookieRequestCultureProvider() };
 });
+
+builder.Services
+  // make sure IHttpContextAccessor is available if you need it later
+  .AddHttpContextAccessor()
+  // register the per-circuit user holder
+  .AddScoped<ICurrentUserService, CurrentUserService>();
 
 var app = builder.Build();
 

@@ -34,6 +34,7 @@
     align-items: center;
     width: 100%;
     height: 100%;
+    gap: 1vh; /* Расстояние между кнопками */
 }
 
     .login-container h2 {
@@ -60,7 +61,6 @@
     justify-content: space-between; /* Разделяет кнопки по обеим сторонам */
     width: 100%; /* Чтобы кнопки растягивались на всю ширину контейнера */
     gap: 15px; /* Расстояние между кнопками */
-    margin-top: 10px; /* Добавим отступ сверху для выравнивания */
 }
 
 /* Кнопки */
@@ -164,8 +164,7 @@
 .button-container {
     display: flex;
     justify-content: space-between;
-    gap: 14px;
-    margin-top: 8px;
+    gap: 0,5vh;
 }
 
     /* Кнопки */

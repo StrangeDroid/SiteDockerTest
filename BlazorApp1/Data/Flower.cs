@@ -12,6 +12,9 @@
     public int PriceSell { get; set; } // ← из flowertypes
     public string GetStateImage()
     {
+        if (IsDead)
+            return $"/images/flowers/{CodeName}/fall.png"; // или любой другой файл
+
         string imageFile = Hp switch
         {
             15 => "rise.png",

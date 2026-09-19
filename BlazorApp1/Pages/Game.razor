@@ -9,35 +9,158 @@
 @using Microsoft.Extensions.Localization
 @inject IStringLocalizer<Game> Localizer
 @inject IJSRuntime JSRuntime
+@inject ICurrentUserService CurrentUserSvc
 @code {
     private List<Flower> shopFlowers = new();
     async void OpenShop()
     {
+        await ShowCoinChange(-1, "defaultSound");
         showSettings = false;
         showShop = true;
         showMyFlowers = false;
+        showShopError = false;
 
         await LoadShopFlowers(); // теперь await
         StateHasChanged();
     }
+
     private bool ShowCoinNotification = false;
+    private bool showTutorialPrompt = false;
+    private bool tutorialYes = false;
     private string CoinMessage = "";
     private bool IsPositiveCoin = true;
-    private async Task ShowCoinChange(int delta, string sound = "defaultSound")
+    private string shopTitleMessage = "";
+    private string shopErrorMessage = "";
+    private string zeroFlowersMessage = "";
+    private string panelState = "hidden";
+    private string buttonState = "hidden";
+    private int _musicVolume = 100;
+    private int countTutor = 1;
+    private string idElement = "";
+    private bool IsLeftPanelActive = false;
+
+    private bool TutorFlower = false;
+    private bool TutorQuestion = false;
+    private bool TutorMoney = false;
+    private bool TutorSettings = false;
+    private bool TutorMyFlowers = false;
+    private bool TutorInstruct = false;
+    private bool TutorShop = false;
+    private bool TutorEnd = false;
+    private string InstructionTytle = "";
+    private string InstructionText = "";
+
+    public int MusicVolume
     {
-        if (delta == 0) return;
+        get => _musicVolume;
+        set
+        {
+            if (_musicVolume == value) return;
+            _musicVolume = value;
+            _ = JSRuntime.InvokeVoidAsync("setMusicVolume", _musicVolume / 100.0);
+            _ = JSRuntime.InvokeVoidAsync("saveVolumePrefs", _musicVolume, _effectsVolume);
 
-        IsPositiveCoin = delta > 0;
-        CoinMessage = IsPositiveCoin ? $"+{delta} монет" : $"-{Math.Abs(delta)} монет";
-        ShowCoinNotification = true;
+        }
+    }
 
-        _ = JSRuntime.InvokeVoidAsync("playSound", sound);
+    public class DomRect
+    {
+        public double Top { get; set; }
+        public double Left { get; set; }
+        public double Width { get; set; }
+        public double Height { get; set; }
+        public double Right { get; set; }
+        public double Bottom { get; set; }
+    }
 
-        StateHasChanged();
-        _ = HideCoinNotificationAfterDelay(1500);
+    private int _effectsVolume = 100;
+    public int EffectsVolume
+    {
+        get => _effectsVolume;
+        set
+        {
+            if (_effectsVolume == value) return;
+            _effectsVolume = value;
+            _ = JSRuntime.InvokeVoidAsync("setEffectsVolume", _effectsVolume / 100.0);
+            _ = JSRuntime.InvokeVoidAsync("saveVolumePrefs", _musicVolume, _effectsVolume);
+        }
     }
 
 
+
+    private async Task ShowCoinChange(int delta, string sound = "defaultSound")
+    {
+        try
+        {
+            if (delta == -1)
+            {
+                // ShowCoinNotification = true;
+                // await InvokeAsync(StateHasChanged);
+
+                // // 🔊 Проигрываем звук
+                try
+                {
+                    await JSRuntime.InvokeVoidAsync("playSound", sound);
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"Ошибка воспроизведения звука: {ex.Message}");
+                }
+                // await Task.Delay(600);
+                // ShowCoinNotification = false;
+                // await InvokeAsync(StateHasChanged);
+                return;
+            }
+            if (delta == 0)
+            {
+                // ❌ Неверный ответ
+                IsPositiveCoin = false;
+                CoinMessage = "Ответ неверный!";
+            }
+            else
+            {
+                // ✅ Верный ответ / покупка / продажа
+                IsPositiveCoin = delta > 0;
+                CoinMessage = IsPositiveCoin ? $"+{delta} монет" : $"-{Math.Abs(delta)} монет";
+            }
+
+            ShowCoinNotification = true;
+            await InvokeAsync(StateHasChanged);
+
+            // 🔊 Проигрываем звук
+            try
+            {
+                await JSRuntime.InvokeVoidAsync("playSound", sound);
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Ошибка воспроизведения звука: {ex.Message}");
+            }
+
+            // ⏱️ Уменьшаем задержку до 600 мс вместо 1500
+            await Task.Delay(600);
+            ShowCoinNotification = false;
+            await InvokeAsync(StateHasChanged);
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Ошибка в ShowCoinChange: {ex.Message}");
+        }
+    }
+    private string GetStateDisplayName(string state, Flower flower)
+    {
+        if (flower.IsDead)
+            return "Сдох цветок";
+
+        return state switch
+        {
+            "pre_fall" => "Увядает",
+            "fall" => "Уже почти умер",
+            "pre_rise" => "Расцветает",
+            "rise" => "Цветёт",
+            _ => "Жив"
+        };
+    }
     private async Task HideCoinNotificationAfterDelay(int delayMs)
     {
         await Task.Delay(delayMs);
@@ -67,54 +190,82 @@
                 });
         }
     }
+    private readonly SemaphoreSlim buyLock = new SemaphoreSlim(1, 1);
 
     private async void BuyFlower(Flower flower)
     {
-        if (UserSession.CurrentUser.Coins < flower.PriceBuy)
-            return;
-
-        var connStr = "Server=31.31.197.28;Port=3310;Database=u3126643_flowers_db;User=u3126643_user_app;Password=xxxKKTX6815!;Charset=utf8mb4;SslMode=none;";
-        using var conn = new MySqlConnection(connStr);
-        await conn.OpenAsync();
-
-        // Найдём первый свободный слот (0-5)
-        var usedSlots = UserSession.CurrentUser.Flowers.Select(f => f.Slot).ToHashSet();
-        int freeSlot = Enumerable.Range(0, 6).FirstOrDefault(i => !usedSlots.Contains(i));
-        if (usedSlots.Count >= 6)
-            return;
-
-        // Добавить цветок в БД
-        var insertCmd = new MySqlCommand("INSERT INTO flowers (user_id, type_id, hp, pot_slot) VALUES (@uid, @type, @hp, @slot)", conn);
-        insertCmd.Parameters.AddWithValue("@uid", UserSession.CurrentUser.Id);
-        insertCmd.Parameters.AddWithValue("@type", flower.TypeId);
-        insertCmd.Parameters.AddWithValue("@hp", 15);
-        insertCmd.Parameters.AddWithValue("@slot", freeSlot);
-        await insertCmd.ExecuteNonQueryAsync();
-
-        // Обновить монеты в БД
-        UserSession.CurrentUser.Coins -= flower.PriceBuy;
-        await ShowCoinChange(-flower.PriceBuy, "defaultSound");
-
-        var updateCoins = new MySqlCommand("UPDATE users SET coins = @coins WHERE id = @id", conn);
-        updateCoins.Parameters.AddWithValue("@coins", UserSession.CurrentUser.Coins);
-        updateCoins.Parameters.AddWithValue("@id", UserSession.CurrentUser.Id);
-        await updateCoins.ExecuteNonQueryAsync();
-
-        // Добавить в список в C#
-        UserSession.CurrentUser.Flowers.Add(new Flower
+        if (!await buyLock.WaitAsync(0))
+            return; // если семафор занят — не пускаем
+        try
+        {
+            if (CurrentUserSvc.User.Coins < flower.PriceBuy)
             {
-                TypeId = flower.TypeId,
-                DisplayName = flower.DisplayName,
-                CodeName = flower.CodeName,
-                PriceBuy = flower.PriceBuy,
-                PriceSell = flower.PriceSell,
-                Hp = 9,
-                MaxHp = 15,
-                Slot = freeSlot
-            });
+                showShop = false;
+                showShopError = true;
+                shopTitleMessage = "Недостаточно средств";
+                shopErrorMessage = "У Вас недостаточно монет. Продайте свои цветы или отвечайте на вопросы правильно и получайте вознаграждение!";
+                return;
+            }
+            if (CurrentUserSvc.User.Flowers.Count == 6)
+            {
+                showShop = false;
+                showShopError = true;
+                shopTitleMessage = "Отсутствие мест";
+                shopErrorMessage = "У Вас нет свободных мест для цветов.\nВырастите и продайте цветы, чтобы посадить новые!";
+                return;
+            }
+            var connStr = "Server=31.31.197.28;Port=3310;Database=u3126643_flowers_db;User=u3126643_user_app;Password=xxxKKTX6815!;Charset=utf8mb4;SslMode=none;";
+            using var conn = new MySqlConnection(connStr);
+            await conn.OpenAsync();
+            // Найдём первый свободный слот (0-5)
+            var usedSlots = CurrentUserSvc.User.Flowers.Select(f => f.Slot).ToHashSet();
+            int freeSlot = Enumerable.Range(0, 6).FirstOrDefault(i => !usedSlots.Contains(i));
 
-        StateHasChanged();
+
+            // Добавить цветок в БД
+            var insertCmd = new MySqlCommand("INSERT INTO flowers (user_id, type_id, hp, pot_slot) VALUES (@uid, @type, @hp, @slot)", conn);
+            insertCmd.Parameters.AddWithValue("@uid", CurrentUserSvc.User.Id);
+            insertCmd.Parameters.AddWithValue("@type", flower.TypeId);
+            insertCmd.Parameters.AddWithValue("@hp", 9);
+            insertCmd.Parameters.AddWithValue("@slot", freeSlot);
+            await insertCmd.ExecuteNonQueryAsync();
+            int newId = Convert.ToInt32(insertCmd.LastInsertedId);
+            // Обновить монеты в БД
+            CurrentUserSvc.User.Coins -= flower.PriceBuy;
+            await ShowCoinChange(-flower.PriceBuy, "defaultSound");
+
+            var updateCoins = new MySqlCommand("UPDATE users SET coins = @coins WHERE id = @id", conn);
+            updateCoins.Parameters.AddWithValue("@coins", CurrentUserSvc.User.Coins);
+            updateCoins.Parameters.AddWithValue("@id", CurrentUserSvc.User.Id);
+            await updateCoins.ExecuteNonQueryAsync();
+
+            // Добавить в список в C#
+            CurrentUserSvc.User.Flowers.Add(new Flower
+                {
+                    Id = newId,
+                    TypeId = flower.TypeId,
+                    DisplayName = flower.DisplayName,
+                    CodeName = flower.CodeName,
+                    PriceBuy = flower.PriceBuy,
+                    PriceSell = flower.PriceSell,
+                    Hp = 9,
+                    MaxHp = 15,
+                    Slot = freeSlot
+                });
+
+            StateHasChanged();
+        }
+        finally
+        {
+            buyLock.Release();
+        }
     }
+
+    private void InstructionsButton()
+    {
+        panelState = panelState == "hidden" ? "visible" : "hidden";
+    }
+
 
     private static readonly string[] PotImages = new[]
     {
@@ -128,7 +279,7 @@
     private string GetFlowerImage(int slot)
     {
 
-        var flower = UserSession.CurrentUser.Flowers.FirstOrDefault(f => f.Slot == slot);
+        var flower = CurrentUserSvc.User.Flowers.FirstOrDefault(f => f.Slot == slot);
         return flower != null
             ? flower.GetStateImage()
             : "/images/flowers/empty.png"; // Заглушка, если цветка нет
@@ -140,25 +291,29 @@
     bool showSettings = false;
     bool showShop = false;
     bool showMyFlowers = false;
-
-    void OpenSettings()
+    bool showShopError = false;
+    bool fdsfds = true;
+    async void OpenSettings()
     {
+        await ShowCoinChange(-1, "defaultSound");
         showSettings = true;
         showShop = false;
         showMyFlowers = false;
         StateHasChanged();
     }
 
-    void OpenMyFlowers()
+    async void OpenMyFlowers()
     {
+        await ShowCoinChange(-1, "defaultSound");
         showSettings = false;
         showShop = false;
         showMyFlowers = true;
         StateHasChanged();
     }
 
-    void CloseModals()
+    async void CloseModals()
     {
+        await ShowCoinChange(-1, "defaultSound");
         showSettings = false;
         showShop = false;
         showMyFlowers = false;
@@ -185,7 +340,7 @@
         showMyFlowers = false;
 
         // 3. Сбросить пользователя
-        UserSession.CurrentUser = null;
+        CurrentUserSvc.User = null;
 
         // 4. Перейти на страницу регистрации
         Navigation.NavigateTo("/registration", forceLoad: true);
@@ -216,49 +371,106 @@
     private int musicVolume = 50;
     private int effectsVolume = 50;
 
-    private async void SellFlower(Flower flower, int price)
+    private readonly SemaphoreSlim sellLock = new SemaphoreSlim(1, 1);
+    // private async void SellFlower(Flower flower, int price)
+    // {
+    //     if (!await sellLock.WaitAsync(0))
+    //         return; // если семафор занят — не пускаем
+    //     try
+    //     {
+    //         var connStr = "Server=31.31.197.28;Port=3310;Database=u3126643_flowers_db;User=u3126643_user_app;Password=xxxKKTX6815!;Charset=utf8mb4;SslMode=none;";
+    //         using var conn = new MySqlConnection(connStr);
+    //         await conn.OpenAsync();
+
+    //         CurrentUserSvc.User.Flowers.Remove(flower);
+    //         // 1. Удалить цветок из таблицы
+    //         var deleteCmd = new MySqlCommand("DELETE FROM flowers WHERE id = @id", conn);
+    //         deleteCmd.Parameters.AddWithValue("@id", flower.Id);
+    //         await deleteCmd.ExecuteNonQueryAsync();
+    //         Debug.WriteLine(flower.Id + "Удален");
+
+
+    //         CurrentUserSvc.User.Coins += price;
+    //         var updateCoins = new MySqlCommand("UPDATE users SET coins = @coins WHERE id = @id", conn);
+    //         updateCoins.Parameters.AddWithValue("@coins", CurrentUserSvc.User.Coins);
+    //         updateCoins.Parameters.AddWithValue("@id", CurrentUserSvc.User.Id);
+    //         await updateCoins.ExecuteNonQueryAsync();
+    //         // 2. Обновить монеты пользователя
+
+    //         await ShowCoinChange(+price, "defaultSound");
+    //         // 3. Удалить цветок из списка цветов
+
+
+    //         // 4. Закрыть вопрос, если он связан с этим цветком
+    //         if (currentQuestionSlot.HasValue && currentQuestionSlot.Value == flower.Slot)
+    //         {
+    //             CloseQuestionModal();
+    //         }
+
+    //         // 5. Удалить вопрос из activeQuestions
+    //         if (activeQuestions.ContainsKey(flower.Slot))
+    //         {
+    //             activeQuestions.Remove(flower.Slot);
+    //         }
+
+    //         StateHasChanged();
+    //     }
+    //     finally
+    //     {
+    //         sellLock.Release();
+    //     }
+    // }
+    private async Task SellFlower(int flowerId, int price)
     {
-        var connStr = "Server=31.31.197.28;Port=3310;Database=u3126643_flowers_db;User=u3126643_user_app;Password=xxxKKTX6815!;Charset=utf8mb4;SslMode=none;";
-        using var conn = new MySqlConnection(connStr);
-        await conn.OpenAsync();
-
-        // 1. Удалить цветок из таблицы
-        var deleteCmd = new MySqlCommand("DELETE FROM flowers WHERE id = @id LIMIT 1", conn);
-        deleteCmd.Parameters.AddWithValue("@id", flower.Id);
-        await deleteCmd.ExecuteNonQueryAsync();
-
-        // 2. Обновить монеты пользователя
-        UserSession.CurrentUser.Coins += price;
-        await ShowCoinChange(+flower.PriceBuy, "defaultSound");
-
-
-        var updateCoins = new MySqlCommand("UPDATE users SET coins = @coins WHERE id = @id", conn);
-        updateCoins.Parameters.AddWithValue("@coins", UserSession.CurrentUser.Coins);
-        updateCoins.Parameters.AddWithValue("@id", UserSession.CurrentUser.Id);
-        await updateCoins.ExecuteNonQueryAsync();
-
-        // 3. Удалить цветок из списка цветов
-        UserSession.CurrentUser.Flowers.Remove(flower);
-
-        // 4. Закрыть вопрос, если он связан с этим цветком
-        if (currentQuestionSlot.HasValue && currentQuestionSlot.Value == flower.Slot)
+        if (!await sellLock.WaitAsync(0))
+            return;
+        try
         {
-            CloseQuestionModal();
-        }
+            if (flowerId == 0)
+                ;
+            var connStr = "Server=31.31.197.28;Port=3310;Database=u3126643_flowers_db;User=u3126643_user_app;Password=xxxKKTX6815!;Charset=utf8mb4;SslMode=none;";
+            using var conn = new MySqlConnection(connStr);
+            await conn.OpenAsync();
 
-        // 5. Удалить вопрос из activeQuestions
-        if (activeQuestions.ContainsKey(flower.Slot))
+            var flower = CurrentUserSvc.User.Flowers.FirstOrDefault(f => f.Id == flowerId);
+            if (flower == null) return;
+
+            CurrentUserSvc.User.Flowers.Remove(flower);
+
+            var deleteCmd = new MySqlCommand("DELETE FROM flowers WHERE id = @id", conn);
+            deleteCmd.Parameters.AddWithValue("@id", flowerId);
+            await deleteCmd.ExecuteNonQueryAsync();
+
+            CurrentUserSvc.User.Coins += price;
+
+            var updateCoins = new MySqlCommand("UPDATE users SET coins = @coins WHERE id = @id", conn);
+            updateCoins.Parameters.AddWithValue("@coins", CurrentUserSvc.User.Coins);
+            updateCoins.Parameters.AddWithValue("@id", CurrentUserSvc.User.Id);
+            await updateCoins.ExecuteNonQueryAsync();
+
+            await ShowCoinChange(+price, "defaultSound");
+
+            if (currentQuestionSlot.HasValue && currentQuestionSlot.Value == flower.Slot)
+            {
+                CloseQuestionModal();
+            }
+            if (activeQuestions.ContainsKey(flower.Slot))
+            {
+                activeQuestions.Remove(flower.Slot);
+            }
+
+            StateHasChanged();
+        }
+        finally
         {
-            activeQuestions.Remove(flower.Slot);
+            sellLock.Release();
         }
-
-        StateHasChanged();
     }
 
-    private void ThrowOutFlower(Flower flower)
+    private async void ThrowOutFlower(Flower flower)
     {
         // 1. Удалить цветок из списка цветов
-        UserSession.CurrentUser.Flowers.Remove(flower);
+        CurrentUserSvc.User.Flowers.Remove(flower);
 
         // 2. Закрыть вопрос, если он связан с этим цветком
         if (currentQuestionSlot.HasValue && currentQuestionSlot.Value == flower.Slot)
@@ -271,7 +483,14 @@
         {
             activeQuestions.Remove(flower.Slot);
         }
+        var connStr = "Server=31.31.197.28;Port=3310;Database=u3126643_flowers_db;User=u3126643_user_app;Password=xxxKKTX6815!;Charset=utf8mb4;SslMode=none;";
+        using var conn = new MySqlConnection(connStr);
+        await conn.OpenAsync();
 
+        // 1. Удалить цветок из таблицы
+        var deleteCmd = new MySqlCommand("DELETE FROM flowers WHERE id = @id LIMIT 1", conn);
+        deleteCmd.Parameters.AddWithValue("@id", flower.Id);
+        await deleteCmd.ExecuteNonQueryAsync();
         // 4. TODO: Удалить цветок из БД
         // Это можно добавить позже, если потребуется
 
@@ -297,22 +516,78 @@
         public bool IsCorrect { get; set; }
     }
 
-    protected override async void OnInitialized()
+    protected override async Task OnAfterRenderAsync(bool firstRender)
     {
-        selectedLanguage = CultureInfo.CurrentUICulture.TwoLetterISOLanguageName;
-
-        // Слушаем первое кликовое действие
-        _ = JSRuntime.InvokeVoidAsync("eval", "document.body.addEventListener('click', () => window.initAudio(), { once: true })");
-
-        await LoadValidTypeIds();
-        questionTimer = new System.Timers.Timer(1000);
-        questionTimer.Elapsed += async (s, e) => { await AskNextQuestion(); };
-        questionTimer.AutoReset = true;
-        questionTimer.Start();
-
-        await AskNextQuestion();
+        if (firstRender)
+        {
+            // unlock audio on first user click
+            await JSRuntime.InvokeVoidAsync("eval", @"
+          document.body.addEventListener('click', () => window.initAudio(), { once: true });
+        ");
+        }
     }
 
+
+    protected override async Task OnInitializedAsync()
+    {
+
+
+        selectedLanguage = CultureInfo.CurrentUICulture.TwoLetterISOLanguageName;
+
+        await LoadValidTypeIds();
+
+        questionTimer = new System.Timers.Timer();
+        questionTimer.Elapsed += async (s, e) => await HandleTimerTick();
+        questionTimer.AutoReset = false;
+        AdjustTimerInterval();
+        var req = httpContextAccessor.HttpContext?.Request;
+        if (req?.Cookies.TryGetValue("musicVolume", out var mvStr) == true &&
+            int.TryParse(mvStr, out var mv))
+            MusicVolume = mv;
+
+        if (req?.Cookies.TryGetValue("effectsVolume", out var evStr) == true &&
+            int.TryParse(evStr, out var ev))
+            EffectsVolume = ev;
+
+        if (CurrentUserSvc.User == null)
+            Navigation.NavigateTo("/");
+        else
+            await LoadValidTypeIds();
+
+        questionTimer = new System.Timers.Timer();
+        questionTimer.Elapsed += async (s, e) => await HandleTimerTick();
+        questionTimer.AutoReset = false;
+        AdjustTimerInterval();
+        InstructionTextBox();
+
+    }
+
+
+    private async Task HandleTimerTick()
+    {
+        await AskNextQuestion();
+        AdjustTimerInterval();  // пересчёт после каждого тика
+    }
+    private void AdjustTimerInterval()
+    {
+        int activeCount = activeQuestions.Values.Count(q => q != null);
+
+        double newInterval;
+
+        if (activeCount == 0)
+            newInterval = 1000;
+        else if (activeCount == 1)
+            newInterval = 2500;
+        else if (activeCount == 2)
+            newInterval = 5000;
+        else if (activeCount == 3)
+            newInterval = 8000;
+        else
+            newInterval = 12000;
+
+        questionTimer.Interval = newInterval;
+        questionTimer.Start();
+    }
     private async Task LoadValidTypeIds()
     {
         try
@@ -338,12 +613,12 @@
     {
         try
         {
-            if (UserSession.CurrentUser == null)
+            if (CurrentUserSvc.User == null)
             {
                 Debug.WriteLine("❌ AskNextQuestion cancelled: user is null");
                 return;
             }
-            var candidates = UserSession.CurrentUser.Flowers
+            var candidates = CurrentUserSvc.User.Flowers
                 .Where(f => !f.IsDead && !activeQuestions.ContainsKey(f.Slot) && validTypeIds.Contains(f.TypeId))
                 .Select(f => f.Slot)
                 .ToList();
@@ -373,12 +648,12 @@
     {
         try
         {
-            if (UserSession.CurrentUser == null)
+            if (CurrentUserSvc.User == null)
             {
                 Debug.WriteLine("❌ Current user is null");
                 return;
             }
-            var flower = UserSession.CurrentUser.Flowers.FirstOrDefault(f => f.Slot == slot);
+            var flower = CurrentUserSvc.User.Flowers.FirstOrDefault(f => f.Slot == slot);
             if (flower == null || flower.IsDead || activeQuestions.ContainsKey(slot))
             {
                 Debug.WriteLine($"⛔ Skipping slot {slot}: null or dead or already active");
@@ -390,10 +665,10 @@
             var connStr = "Server=31.31.197.28;Port=3310;Database=u3126643_flowers_db;User=u3126643_user_app;Password=xxxKKTX6815!;Charset=utf8mb4;SslMode=none;";
             using var conn = new MySqlConnection(connStr);
             await conn.OpenAsync();
-
+            Debug.WriteLine("Бд подключена, начинаем выборку вопросов");
             var qCmd = new MySqlCommand("SELECT id, content FROM questions WHERE flowertype_id = @ftype ORDER BY RAND() LIMIT 1", conn);
             qCmd.Parameters.AddWithValue("@ftype", flower.TypeId);
-
+            Debug.WriteLine("Вопросы существуют");
             using var qReader = await qCmd.ExecuteReaderAsync();
             if (!await qReader.ReadAsync())
             {
@@ -401,7 +676,7 @@
                 activeQuestions[slot] = null;
                 return;
             }
-
+            Debug.WriteLine("Вопрос создан");
             var question = new QuestionWithAnswers
                 {
                     Id = qReader.GetInt32(0),
@@ -410,7 +685,7 @@
                 };
             var qid = question.Id;
             await qReader.CloseAsync();
-
+            Debug.WriteLine("Начинаем выборку ответов");
             var aCmd = new MySqlCommand("SELECT id, content, is_correct FROM answers WHERE question_id = @qid", conn);
             aCmd.Parameters.AddWithValue("@qid", qid);
             using var aReader = await aCmd.ExecuteReaderAsync();
@@ -423,7 +698,7 @@
                         IsCorrect = aReader.GetBoolean(2)
                     });
             }
-
+            Debug.WriteLine("Ответы существуют");
             if (question.Answers.Count == 0)
             {
                 Debug.WriteLine($"❌ Question found but no answers: {question.Content}");
@@ -442,16 +717,17 @@
     }
 
 
-    private void OpenQuestionModal(int slot)
+    private async void OpenQuestionModal(int slot)
     {
-        if (UserSession.CurrentUser == null)
+        await ShowCoinChange(-1, "defaultSound");
+        if (CurrentUserSvc.User == null)
         {
             Debug.WriteLine($"⛔ Cannot open modal: user is null");
             return;
         }
         Debug.WriteLine($"📥 Opening question modal for slot {slot}");
 
-        var flower = UserSession.CurrentUser.Flowers.FirstOrDefault(f => f.Slot == slot);
+        var flower = CurrentUserSvc.User.Flowers.FirstOrDefault(f => f.Slot == slot);
         if (flower == null || flower.IsDead)
         {
             Debug.WriteLine($"⛔ Flower is dead or missing, cannot open modal for slot {slot}");
@@ -469,13 +745,14 @@
         StateHasChanged();
     }
 
-    private void CloseQuestionModal()
+    private async void CloseQuestionModal()
     {
+        await ShowCoinChange(-1, "defaultSound");
         currentQuestionSlot = null;
         selectedAnswerId = null;
         StateHasChanged();
     }
-    private async void UpdateFlowerAndCoins(Flower flower)
+    private async Task UpdateFlowerAndCoins(Flower flower)
     {
         try
         {
@@ -483,15 +760,14 @@
             using var conn = new MySqlConnection(connStr);
             await conn.OpenAsync();
 
-            var updateHp = new MySqlCommand("UPDATE flowers SET hp = @hp WHERE user_id = @uid AND pot_slot = @slot", conn);
+            var updateHp = new MySqlCommand("UPDATE flowers SET hp = @hp WHERE id = @fid", conn);
             updateHp.Parameters.AddWithValue("@hp", flower.Hp);
-            updateHp.Parameters.AddWithValue("@uid", UserSession.CurrentUser.Id);
-            updateHp.Parameters.AddWithValue("@slot", flower.Slot);
+            updateHp.Parameters.AddWithValue("@fid", flower.Id);
             await updateHp.ExecuteNonQueryAsync();
 
             var updateCoins = new MySqlCommand("UPDATE users SET coins = @coins WHERE id = @id", conn);
-            updateCoins.Parameters.AddWithValue("@coins", UserSession.CurrentUser.Coins);
-            updateCoins.Parameters.AddWithValue("@id", UserSession.CurrentUser.Id);
+            updateCoins.Parameters.AddWithValue("@coins", CurrentUserSvc.User.Coins);
+            updateCoins.Parameters.AddWithValue("@id", CurrentUserSvc.User.Id);
             await updateCoins.ExecuteNonQueryAsync();
         }
         catch (Exception ex)
@@ -500,35 +776,45 @@
         }
     }
 
-    private async void SubmitAnswer()
+    private async Task SubmitAnswer()
     {
-        if (currentQuestionSlot is null || !activeQuestions.TryGetValue(currentQuestionSlot.Value, out var question))
-            return;
-
-        var selected = question?.Answers.FirstOrDefault(a => a.Id == selectedAnswerId);
-        if (selected == null)
-            return;
-
-        var flower = UserSession.CurrentUser.Flowers.First(f => f.Slot == currentQuestionSlot.Value);
-
-        if (selected.IsCorrect)
+        try
         {
-            UserSession.CurrentUser.Coins += 5;
-            await ShowCoinChange(5, "successSound");
-            flower.Hp = Math.Min(flower.Hp + 1, flower.MaxHp);
+            if (currentQuestionSlot is null || !activeQuestions.TryGetValue(currentQuestionSlot.Value, out var question))
+                return;
+
+            var selected = question?.Answers.FirstOrDefault(a => a.Id == selectedAnswerId);
+            if (selected == null)
+                return;
+
+
+            var flower = CurrentUserSvc.User.Flowers.First(f => f.Slot == currentQuestionSlot.Value);
+
+            if (selected.IsCorrect)
+            {
+                CurrentUserSvc.User.Coins += 5;
+                flower.Hp = Math.Min(flower.Hp + 1, flower.MaxHp);
+                await UpdateFlowerAndCoins(flower); // пишем в БД сразу после изменения
+                await ShowCoinChange(5, "successSound");
+                Debug.WriteLine("Ответ верный");
+            }
+            else
+            {
+                flower.Hp = Math.Max(0, flower.Hp - 1);
+                await UpdateFlowerAndCoins(flower);
+                await ShowCoinChange(0, "loseSound");
+                Debug.WriteLine("Ответ верный");
+            }
+
+
+            activeQuestions.Remove(currentQuestionSlot.Value);
+            CloseQuestionModal();
+            StateHasChanged();
         }
-        else
+        catch (Exception ex)
         {
-            await ShowCoinChange(0, "loseSound"); // монет нет, но проигрышный зву
-            flower.Hp = Math.Max(0, flower.Hp - 1);
+            Debug.WriteLine("Ошибка" + ex.Message);
         }
-
-        // 🛠️ Обновление в БД
-        UpdateFlowerAndCoins(flower);
-
-        activeQuestions.Remove(currentQuestionSlot.Value);
-        CloseQuestionModal();
-        StateHasChanged();
     }
 
     public void Dispose()
@@ -536,86 +822,228 @@
         questionTimer?.Stop();
         questionTimer?.Dispose();
     }
+    private static readonly Dictionary<string, string> flowerImageMap = new()
+{
+    { "Алоэ медицины", "aloe_medicine.png" },
+    { "Кактус физики", "cactus_physics.png" },
+    { "Папоротник биологии", "fern_biology.png" },
+    { "Фикус классики", "ficus_classic.png" },
+    { "Мандариновое дерево экологии", "mandarin_ecology.png" },
+    { "Лук химии", "onion_chemistry.png" },
+    { "Орхидея поэзии", "orchid_poetry.png" },
+    { "Пальма климата", "palm_climate.png" },
+    { "Зелёный хищник", "predatory_grass.png" },
+    { "Роза бессмертия", "rose_eternal.png" },
+    { "Фиалка волны", "violet_wave.png" }
+};
+
+    private string GetShopFlowerImage(Flower flower)
+    {
+        if (flower == null || string.IsNullOrEmpty(flower.CodeName))
+            return "/images/flowers/empty.png";
+
+        return $"/images/flowers_shop/{flower.CodeName}.png";
+    }
+
+    private void StartTutorial()
+    {
+        CurrentUserSvc.User.IsNewUser = false;
+        IsLeftPanelActive = true;
+        panelState = panelState == "hidden" ? "visible" : "hidden";
+        buttonState = buttonState == "hidden" ? "visible" : "hidden";
+        TutorClick();
+    }
+
+    private void TutorClick()
+    {
+        switch (countTutor)
+        {
+            case 1:
+                InstructionTytle = "Твой домашний сад";
+                InstructionText = "Смотри - это твой маленький домашний сад. Здесь ты можешь выращивать свои растения, но они необычные: их не нужно поливать и удобрять, но важно правильно отвечать на их вопросы!";
+                TutorFlower = true;
+                countTutor++;
+                break;
+            case 2:
+                InstructionTytle = "Вопросы";
+                InstructionText = "Это - те самые вопросы. Можешь попробовать ответить на них, и, если ответишь правильно, тебе начислят 5 монеток! Но если ошибешься - твое растение начнет вянуть! Следи, чтобы не пришлось его выкидывать!";
+                TutorFlower = false;
+                TutorQuestion = true;
+                countTutor++;
+                break;
+            case 3:
+                InstructionTytle = "Твои монеты";
+                InstructionText = "На этом поле ты можешь посмотреть свое количество монет. Они тебе пригодятся для покупки новых видов цветов!";
+                TutorQuestion = false;
+                TutorMoney = true;
+                countTutor++;
+                break;
+            case 4:
+                InstructionTytle = "Продажа цветов";
+                InstructionText = "А тут ты можешь продать свои цветы. Чем лучше самочувствие у цветка - тем больше ты можешь заработать!";
+                TutorMoney = false;
+                TutorMyFlowers = true;
+                countTutor++;
+                break;
+            case 5:
+                InstructionTytle = "Покупка цветов";
+                InstructionText = "Теперь - самое интересное. Это магазин! Тут ты можешь купить самые разные цветы и расширить свою коллекцию. Цветы продаются в стандартном состоянии, но ты можешь заставить их расцвести!";
+                TutorMyFlowers = false;
+                TutorShop = true;
+                countTutor++;
+                break;
+            case 6:
+                InstructionTytle = "Настройки";
+                InstructionText = "Если тебе не нравится громкость музыки или эффектов, тут ты сможешь настроить громкость для себя!";
+                TutorShop = false;
+                TutorSettings = true;
+                countTutor++;
+                break;
+            case 7:
+                InstructionTytle = "Инструкция";
+                InstructionText = "На этом все! Как видишь, тут все просто. Но если ты что-то забудешь - можешь нажать на эту кнопку, и всплывет окно с инструкцией. Приятного выращивания!";
+                TutorSettings = false;
+                TutorInstruct = true;
+                countTutor++;
+                break;
+            case 8:
+                InstructionTextBox();
+                TutorInstruct = false;
+                TutorEnd = true;
+                buttonState = buttonState == "hidden" ? "visible" : "hidden";
+                panelState = panelState == "hidden" ? "visible" : "hidden";
+                IsLeftPanelActive = false;
+                break;
+        }
+
+        StateHasChanged(); // Обновляем UI после изменения currentRect
+    }
+
+    private void InstructionTextBox()
+    {
+        InstructionTytle = "Инструкция";
+        InstructionText = "Это - твой маленький домашний сад. Здесь ты можешь выращивать свои растения, их не нужно поливать и удобрять, но важно правильно отвечать на их вопросы. Если ответ правильный, тебе начислят 5 монет, при ошибке - твое растение начнет вянуть. При большом количестве ошибок цветок полностью завянет и его придется выкинуть. Справа сверху указано твое количество монет. Чтобы продать или купить цветы, нужно открыть вкладку с тележкой или цветком. Во вкладке настроек можно поменять громкость. Приятного выращивания!";
+    }
+
 
 }
-@if (UserSession.CurrentUser != null)
+
+
+
+@if (CurrentUserSvc.User != null)
 {
-<div class="game-wrapper">
-    <div class="game-container">
-        <div class="game-field">
-            <div class="shelf">            
-                @foreach (var slot in new[] { 0, 1, 2 })
-                {
-                    <div class="flower-slot">
-                        <!-- Горшок (должен быть внизу) -->
-                        <div class="pot-box">
-                            <img src="@GetPotImage(slot)" />
-                        </div>
+    <div class="game-wrapper">
+        <div class="left-panel @panelState @(IsLeftPanelActive ? "active" : "")">
+            <div class="text-container">
+                <div class="text-window">
+                    <h3>@InstructionTytle</h3>
+                    <p style="text-align: left;">@InstructionText</p>
 
-                        <!-- Цветок (должен быть сверху) -->
-                        <div class="flower-box">
-                            <img src="@GetFlowerImage(slot)" />
-                            @if (activeQuestions.ContainsKey(slot) && activeQuestions[slot] != null)
-                            {
-                                <div class="question-bubble" @onclick="@(() => OpenQuestionModal(slot))">
-                                    ❓
-                                </div>
-                            }
-                        </div>
-                    </div>
-                 
-                 }
+                </div>
+                <button class="next-button @buttonState @(TutorEnd ? "active" : "")" @onclick="TutorClick">Далее</button>
+                <div class="image-container">
+                    <img src="/images/icons/toad.png" class="bottom-image" />
+                </div>
             </div>
-            <div class="shelf">
-                @foreach (var slot in new[] { 3, 4, 5 })
-                {
-                    <div class="flower-slot">
-                        <!-- Горшок (должен быть внизу) -->
-                        <div class="pot-box">
-                            <img src="@GetPotImage(slot)" />
-                        </div>
 
-                        <!-- Цветок (должен быть сверху) -->
-                        <div class="flower-box">
-                            <img src="@GetFlowerImage(slot)" />
-                            @if (activeQuestions.ContainsKey(slot) && activeQuestions[slot] != null)
-                            {
-                                <div class="question-bubble" @onclick="@(() => OpenQuestionModal(slot))">
-                                    ❓
-                                </div>
-                            }
-                        </div>
-                    </div>
-                }
-            </div>
-        
         </div>
-        <div class="money-container">
-            <img class="money-icon" src="images/icons/money.png" />
-            <div class="money-amount">@UserSession.CurrentUser.Coins</div>
-        </div>
+        <div class="game-container">
+            <button class="top-left-button @(TutorInstruct ? "active" : "")" @onclick="InstructionsButton"><img src="/images/icons/lamp.png" /></button>
 
-        <div class="slots-panel">
-            <div class="slot-button" @onclick="OpenMyFlowers">
-                <img class="slot-icon" src="images/icons/my_flowers.png" />
+            <div class="game-field">
+                <div class="shelf">
+                    <div class="shelf-background"></div>  <!-- добавляем фон полки -->
+                    @foreach (var slot in new[] { 0, 1, 2 })
+                    {
+                        <div class="flower-slot">
+                            <!-- Горшок (должен быть внизу) -->
+                            <div class="pot-box">
+                                <img src="@GetPotImage(slot)" />
+                            </div>
+
+
+                            <!-- Цветок (должен быть сверху) -->
+                            <div class="flower-box">
+                                <img class="@(TutorFlower ? "active" : "")" src="@GetFlowerImage(slot)" />
+                                @if (activeQuestions.ContainsKey(slot) && activeQuestions[slot] != null)
+                                {
+                                    <div class="question-bubble @(TutorQuestion ? "active" : "")" @onclick="@(() => OpenQuestionModal(slot))">
+                                        ?
+                                    </div>
+                                }
+                            </div>
+                        </div>
+
+                    }
+                </div>
+                <div class="shelf">
+                    <div class="shelf-background"></div>  <!-- добавляем фон полки -->
+                    @foreach (var slot in new[] { 3, 4, 5 })
+                    {
+                        <div class="flower-slot">
+                            <!-- Горшок (должен быть внизу) -->
+                            <div class="pot-box">
+                                <img src="@GetPotImage(slot)" />
+                            </div>
+
+                            <!-- Цветок (должен быть сверху) -->
+                            <div class="flower-box">
+                                <img class="@(TutorFlower ? "active" : "")" src="@GetFlowerImage(slot)" />
+                                @if (activeQuestions.ContainsKey(slot) && activeQuestions[slot] != null)
+                                {
+                                    <div id="questionId" class="question-bubble @(TutorQuestion ? "active" : "")" @onclick="@(() => OpenQuestionModal(slot))">
+                                        ?
+                                    </div>
+                                }
+                            </div>
+                        </div>
+                    }
+                </div>
+
             </div>
-            <div class="slot-button" @onclick="OpenShop">
-                <img class="slot-icon" src="images/icons/shop.png" />
+            <div id="moneyId" class="money-container">
+                <img class="money-icon @(TutorMoney ? "active" : "")" src="images/icons/money.png" />
+                <div class="money-amount">@CurrentUserSvc.User.Coins</div>
             </div>
-            <div class="slot-button" @onclick="OpenSettings">
-                <img class="slot-icon" src="images/icons/settings.png" />
-            </div>
-            @*             <div class="slot-button" @onclick="GoToLogin">
+
+            <div class="slots-panel">
+                <div class="slot-button" @onclick="OpenMyFlowers">
+                    <img class="slot-icon @(TutorMyFlowers ? "active" : "")" src="images/icons/my_flowers.png" />
+                </div>
+                <div class="slot-button" @onclick="OpenShop">
+                    <img class="slot-icon @(TutorShop ? "active" : "")" src="images/icons/shop.png" />
+                </div>
+                <div class="slot-button" @onclick="OpenSettings">
+                    <img class="slot-icon @(TutorSettings ? "active" : "")" src="images/icons/settings.png" />
+                </div>
+                @*             <div class="slot-button" @onclick="GoToLogin">
+
                 <img class="slot-icon" src="images/icons/home.png" />
             </div> *@
+            </div>
         </div>
+
+        @if (CurrentUserSvc.User.IsNewUser)
+        {
+            <div class="tutorial-prompt-overlay">
+                <div class="tutorial-prompt-container">
+                    <h3>Обучение</h3>
+                    <p>Привет! Вижу, ты тут впервые. Хочешь пройти краткое обучение по игре?</p>
+                    <div class="tutorial-prompt-buttons">
+                        <button class="btn-yes" @onclick="StartTutorial">Да, конечно!</button>
+                        <button class="btn-no" @onclick="() => CurrentUserSvc.User.IsNewUser = false ">Нет, спасибо</button>
+                    </div>
+                </div>
+            </div>
+        }
     </div>
-        <!-- Модальные окна -->
+
     <!-- Модальные окна -->
     @if (showSettings || showShop || showMyFlowers)
     {
         <div class="modal-overlay"></div>
     }
+
 
     @if (showSettings)
     {
@@ -630,15 +1058,16 @@
                 </select>
             </label>
 
-           
+
             <label>
                 @Localizer["MusicVolumeLabel"]
-                <input type="range" min="0" max="100" @bind="musicVolume" />
+
+                <input class="volume-slider" type="range" min="0" max="100" @bind-value="MusicVolume" @bind-value:event="oninput" />
             </label>
 
             <label>
                 @Localizer["EffectsVolumeLabel"]
-                <input type="range" min="0" max="100" @bind="effectsVolume" />
+                <input class="volume-slider" type="range" min="0" max="100" @bind-value="EffectsVolume" @bind-value:event="oninput" />
             </label>
 
             <div class="modal-buttons">
@@ -659,10 +1088,11 @@
                     @foreach (var flower in shopFlowers)
                     {
                         <div class="flower-card">
-                            <img src="/images/flowers/@flower.CodeName/standart.png" class="flower-img" />
-                            <div class="flower-name">@flower.DisplayName</div>
+                            <img src="@GetShopFlowerImage(flower)" class="flower-img" />
+                            <div class="flower-title">@flower.DisplayName</div>
+                            <div class="spacer"></div> <!-- вот эта вставка важна -->
                             <div class="flower-action">
-                                <button class="action-button" @onclick="() => BuyFlower(flower)">
+                                <button class="flower-button" @onclick="@(async () => { BuyFlower(flower); await JSRuntime.InvokeVoidAsync("playSound", "defaultSound"); })">
                                     @Localizer["BuyPriceTag"]@flower.PriceBuy
                                 </button>
                             </div>
@@ -671,12 +1101,23 @@
                 </div>
             </div>
 
-            <button class="close-full-button" @onclick="CloseModals">
+            <button class="close-full-button" @onclick="@(async () => { CloseModals(); await JSRuntime.InvokeVoidAsync("playSound", "defaultSound"); })">
                 @Localizer["CloseButtonText"]
             </button>
         </div>
     }
 
+    @if (showShopError)
+    {
+        <div class="modal-overlay"></div>
+        <div class="modal1 error-modal show">
+            <h3 class="modal-title">@shopTitleMessage</h3>
+            <p>@shopErrorMessage</p>
+            <button class="close-full-button" @onclick="@(async () => { showShopError = false; await JSRuntime.InvokeVoidAsync("playSound", "defaultSound"); })">
+                @Localizer["CloseButtonText"]
+            </button>
+        </div>
+    }
 
 
     @if (showMyFlowers)
@@ -684,48 +1125,62 @@
         <div class="modal1">
             <h3>@Localizer["FlowerHeadder"]</h3>
             <div class="shop-scroll-wrapper">
-                <div class="flower-grid">
-                    @foreach (var flower in UserSession.CurrentUser.Flowers.OrderBy(f => f.Slot))
-                    {
-                        var state = flower.GetStateImage().Split('/').Last().Replace(".png", "");
-                        int sellPrice = flower.PriceSell;
+                @if (CurrentUserSvc.User.Flowers.Count > 0)
+                {
+                    <div class="flower-grid">
 
-                        switch (state)
+                        @foreach (var flower in CurrentUserSvc.User.Flowers.OrderBy(f => f.Slot))
                         {
-                            case "pre_fall": sellPrice /= 2; break;
-                            case "fall": sellPrice = 0; break;
-                            case "pre_rise": sellPrice = (int)(sellPrice * 1.5); break;
-                            case "rise": sellPrice *= 2; break;
-                        }
+                            var state = flower.GetStateImage().Split('/').Last().Replace(".png", "");
+                            int sellPrice = flower.PriceSell;
 
-                        <div class="flower-card">
-                            <img src="@flower.GetStateImage()" class="flower-img" />
-                            <div class="flower-name">@flower.DisplayName</div>
-                            <div class="flower-state">@Localizer["FlowerState"]@state</div>
-                            <div class="flower-action">
-                                @if (flower.IsDead)
-                                {
-                                    <button class="action-button throw" @onclick="() => ThrowOutFlower(flower)">
-                                        🗑
-                                        <span>@Localizer["RemovePlantTag"]</span>
-                                    </button>
-                                }
-                                else
-                                {
-                                    <button class="action-button" @onclick="() => SellFlower(flower, sellPrice)">
-                                        @Localizer["SellPriceTag"] @sellPrice
-                                    </button>
+                            switch (state)
+                            {
+                                case "pre_fall": sellPrice /= 2; break;
+                                case "fall": sellPrice = 0; break;
+                                case "pre_rise": sellPrice = (int)(sellPrice * 1.5); break;
+                                case "rise": sellPrice *= 2; break;
+                            }
+                            <div class="flower-card">
+                                <div class="image-stack">
+                                    <img src="/images/box/cream_box.png" class="pot-image" />
+                                    <img src="@flower.GetStateImage()" class="flower-image1" />
+                                </div>
+                                <div class="spacer"></div> <!-- вот эта вставка важна -->
+                                <div class="flower-title">@flower.DisplayName</div>
+                                <div class="flower-status">@GetStateDisplayName(state, flower)</div>
+ @*                                <div class="spacer"></div> <!-- вот эта вставка важна --> *@
+                                <div class="flower-actions">
 
-                                }
+                                    @if (flower.IsDead)
+                                    {
+                                        <button class="flower-button remove" @onclick="() => ThrowOutFlower(flower)">
+                                            🗑 <span>@Localizer["RemovePlantTag"]</span>
+                                        </button>
+                                    }
+                                    else
+                                    {
 
+                                        <button class="flower-button" @onclick="@(async () => { await SellFlower(flower.Id, sellPrice); await JSRuntime.InvokeVoidAsync("playSound", "defaultSound"); })">
+                                            @Localizer["SellPriceTag"] @sellPrice
+
+                                        </button>
+                                    }
+                                </div>
                             </div>
-                        </div>
-                    }
-                </div>
-                <button class="close-full-button" @onclick="CloseModals">
-                    @Localizer["CloseButtonText"]
-                </button>
+
+                        }
+                    </div>
+                }
+                else
+                {
+                    zeroFlowersMessage = "У вас нет цветов, купите их в магазине!";
+                    <p>@zeroFlowersMessage</p>
+                }
             </div>
+            <button class="close-full-button" @onclick="CloseModals">
+                @Localizer["CloseButtonText"]
+            </button>
 
         </div>
     }
@@ -738,34 +1193,55 @@
             <div class="question-modal">
                 <h3>@Localizer["QestionHeader"]</h3>
                 <p>@question.Content</p>
-
                 @foreach (var answer in question.Answers)
                 {
                     <label>
                         <input type="radio" name="answer" value="@answer.Id"
-                               @onchange="@(() => selectedAnswerId = answer.Id)"
+                               @onchange="@(
+                    async () =>
+                    {
+                        selectedAnswerId = answer.Id;
+                        await JSRuntime.InvokeVoidAsync("playSound", "defaultSound");
+                    }
+                )"
                                checked="@((selectedAnswerId == answer.Id))" />
                         @answer.Content
                     </label>
                 }
 
-                <button class="action-button" @onclick="SubmitAnswer">Ответить</button>
-                <button class="close-full-button" @onclick="CloseQuestionModal">Закрыть</button>
+
+                <button class="action-button1" @onclick="SubmitAnswer">Ответить</button>
+                <button class="close-full-button1" @onclick="CloseQuestionModal">Закрыть</button>
             </div>
         }
     }
-        <script src="js/audio.js"></script>
 
-        <audio id="successSound" src="/audio/success.mp3" preload="auto"></audio>
-        <audio id="loseSound" src="/audio/lose.mp3" preload="auto"></audio>
-        <audio id="defaultSound" src="/audio/default.mp3" preload="auto"></audio>
+}
+@* @if (CurrentUserSvc.User == null)
+{
+    Navigation.NavigateTo("/");
+} *@
 
-        @if (ShowCoinNotification)
-        {
-            <div class="coin-notification @(IsPositiveCoin ? "positive" : "negative")">
+<script src="audio.js"></script>
+
+<audio id="backgroundMusic"
+       src="/audio/background-loop.mp3"
+       preload="auto"
+       loop
+       muted
+       playsinline>
+</audio>
+<audio id="successSound" src="/audio/success.mp3" preload="auto"></audio>
+<audio id="loseSound" src="/audio/lose.mp3" preload="auto"></audio>
+<audio id="defaultSound" src="/audio/default.mp3" preload="auto"></audio>
+
+@if (ShowCoinNotification)
+{
+    @*             <div class="coin-notification @(IsPositiveCoin ? "positive" : "negative")">
                 <span>@CoinMessage</span>
-            </div>
-        }
- </div>
-
- }
+            </div> *@
+    <div class="coin-notification
+            @(ShowCoinNotification ? (IsPositiveCoin ? "positive show" : "negative show") : "")">
+        <span>@CoinMessage</span>
+    </div>
+}
