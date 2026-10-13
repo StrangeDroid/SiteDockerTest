@@ -1,4 +1,4 @@
--- Runs automatically on the first start of the postgres container (empty volume only).
+-- Applied by the app on startup when the database has no tables (see Data/DatabaseInitializer.cs).
 
 CREATE TABLE users (
     id            SERIAL PRIMARY KEY,

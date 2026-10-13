@@ -7,6 +7,10 @@
   </PropertyGroup>
 
 	<ItemGroup>
+		<!-- Schema and seed data, applied by DatabaseInitializer on an empty database -->
+		<EmbeddedResource Include="Database\*.sql" />
+	</ItemGroup>
+	<ItemGroup>
 		<PackageReference Include="Npgsql" Version="7.0.6" />
 		<PackageReference Include="System.Text.Json" Version="7.0.2" />
 	</ItemGroup>

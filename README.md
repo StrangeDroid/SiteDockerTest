@@ -37,23 +37,56 @@ Built with **Blazor Server (.NET 7)** and **PostgreSQL**, shipped as Docker cont
 
 Requirements: [Docker](https://docs.docker.com/get-docker/) with Docker Compose.
 
+The server only needs `docker-compose.yml` and a `.env` file:
+
 ```bash
-git clone https://github.com/StrangeDroid/SiteDockerTest.git
-cd SiteDockerTest
-cp .env.example .env        # set your own DB password
-docker compose up -d --build
+mkdir flowers && cd flowers
+curl -O https://raw.githubusercontent.com/StrangeDroid/SiteDockerTest/master/docker-compose.yml
+curl -o .env https://raw.githubusercontent.com/StrangeDroid/SiteDockerTest/master/.env.example
+nano .env                   # set your own DB password
+docker compose pull         # download the published app image
+docker compose up -d
 ```
+
+(Or clone the whole repository, which also lets you build the image yourself.)
 
 Open **http://localhost:5273**.
 
+The app image is built by GitHub Actions on every push to `master` and published publicly to the GitHub Container Registry, so no login is needed:
+
+```
+ghcr.io/strangedroid/sitedockertest:latest
+```
+
+To build the image yourself from a clone of the repository instead, run `docker compose up -d --build`.
+
 This starts two containers:
 
-| Service | Image | Purpose |
-|---|---|---|
-| `app` | built from `Dockerfile` | The Blazor web app (ports `5273`, `7041`) |
-| `db` | `postgres:16-alpine` | Database, stored in the `db-data` volume |
+| Service | Container | Image | Purpose |
+|---|---|---|---|
+| `app` | `flowers-app` | `ghcr.io/strangedroid/sitedockertest` | The Blazor web app (ports `5273`, `7041`) |
+| `db` | `flowers-db` | `postgres:16-alpine` | Database, stored in the `db-data` volume |
 
-On first start the database is created and filled automatically from `db/init/`:
+Useful commands:
+
+```bash
+docker compose ps                 # status of both containers
+docker logs -f flowers-app        # app logs
+docker exec -it flowers-db psql -U flowers -d flowers_db   # database console
+```
+
+### Updating to a new version
+
+After new changes land on `master` and the GitHub Actions run finishes:
+
+```bash
+docker compose pull         # newest app image
+docker compose up -d        # recreate the app container; DB data is kept
+```
+
+To pin a specific build instead of `latest`, set `APP_TAG` in `.env` to a commit SHA (every image is also tagged with the commit it was built from).
+
+On startup the app checks the database, and if it has no tables yet it creates them and fills in the starting data. The SQL scripts are built into the app image from `BlazorApp1/Database/`:
 
 | File | Contents |
 |---|---|
@@ -61,7 +94,7 @@ On first start the database is created and filled automatically from `db/init/`:
 | `02-seed.sql` | The 12 flower types |
 | `03-questions.sql` | Test questions in Russian (3 per flower) |
 
-> The init scripts only run when the volume is empty. To recreate the database from scratch (**deletes all users and progress**):
+> The scripts only run when the database is empty; existing data is never touched. To recreate the database from scratch (**deletes all users and progress**):
 > ```bash
 > docker compose down -v && docker compose up -d
 > ```
@@ -75,6 +108,7 @@ Set in `.env` (see `.env.example`):
 | `POSTGRES_DB` | `flowers_db` | Database name |
 | `POSTGRES_USER` | `flowers` | Database user |
 | `POSTGRES_PASSWORD` | `flowers` | Database password, **change it for production** |
+| `APP_TAG` | `latest` | App image tag on ghcr.io: `latest` or a commit SHA |
 
 The app reads its connection string from `ConnectionStrings:Default`. Compose passes it as the `ConnectionStrings__Default` environment variable.
 
@@ -86,7 +120,7 @@ Requirements: [.NET 7 SDK](https://dotnet.microsoft.com/download/dotnet/7.0) and
    ```bash
    docker compose up -d db
    ```
-2. Run the app (it uses the `localhost` connection string from `appsettings.Development.json`):
+2. Run the app (it uses the `localhost` connection string from `appsettings.Development.json` and creates the tables on first start):
    ```bash
    cd BlazorApp1
    dotnet run
@@ -94,14 +128,14 @@ Requirements: [.NET 7 SDK](https://dotnet.microsoft.com/download/dotnet/7.0) and
 
 ## Adding questions
 
-Add lines to `db/init/03-questions.sql` (or create a new `04-*.sql` file):
+Add lines to `BlazorApp1/Database/03-questions.sql` (or create a new `04-*.sql` file next to it):
 
 ```sql
 -- add_q(flower_type_id, question, correct answer, wrong 1, wrong 2, wrong 3)
 SELECT pg_temp.add_q(2, 'В каких единицах измеряется сила?', 'Ньютон', 'Джоуль', 'Ватт', 'Паскаль');
 ```
 
-Answers are stored in random order, so the correct one isn't always first. Then recreate the database (see above).
+Answers are stored in random order, so the correct one isn't always first. New questions are only added to a fresh database, so rebuild the app and recreate the database (see above).
 
 ## Database schema
 
@@ -158,11 +192,11 @@ erDiagram
 
 ```
 ├── BlazorApp1/
-│   ├── Data/            # Models, DB connection factory, user repository
+│   ├── Data/            # Models, DB connection, schema initializer, user repository
+│   ├── Database/        # SQL schema + seed data, applied to an empty DB on startup
 │   ├── Pages/           # Index (auto-login), RegistrationWindow, Game
 │   ├── Resources/       # ru / en localization (.resx)
 │   └── wwwroot/         # CSS, JS (cookies, audio), images, sounds
-├── db/init/             # SQL run on first DB start
 ├── Dockerfile           # Multi-stage build of the app image
 ├── docker-compose.yml   # app + PostgreSQL
 └── .github/workflows/   # Builds and pushes the image to GHCR
@@ -170,11 +204,10 @@ erDiagram
 
 ## CI
 
-On every push to `master`, GitHub Actions builds the Docker image and publishes it to the GitHub Container Registry:
+GitHub Actions (`.github/workflows/docker-build.yml`) runs on every push and pull request:
 
-```
-ghcr.io/strangedroid/sitedockertest:latest
-```
+- **build-and-push** builds the Docker image. On pushes to `master` it also publishes it as `ghcr.io/strangedroid/sitedockertest:latest` and `:<commit-sha>`.
+- **smoke-test** starts the app and database with docker compose, checks that the database was seeded and that the site responds.
 
 ## Tech stack
 
