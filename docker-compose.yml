@@ -1,6 +1,7 @@
 services:
   db:
     image: postgres:16-alpine
+    container_name: flowers-db
     restart: unless-stopped
     environment:
       POSTGRES_DB: ${POSTGRES_DB:-flowers_db}
@@ -20,6 +21,10 @@ services:
     #   - "5432:5432"
 
   app:
+    # Published by GitHub Actions from master; `docker compose pull` downloads it.
+    # `docker compose up --build` builds it locally from the Dockerfile instead.
+    image: ghcr.io/strangedroid/sitedockertest:${APP_TAG:-latest}
+    container_name: flowers-app
     build:
       context: .
       dockerfile: Dockerfile

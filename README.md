@@ -41,17 +41,46 @@ Requirements: [Docker](https://docs.docker.com/get-docker/) with Docker Compose.
 git clone https://github.com/StrangeDroid/SiteDockerTest.git
 cd SiteDockerTest
 cp .env.example .env        # set your own DB password
-docker compose up -d --build
+docker compose pull         # download the published app image
+docker compose up -d
 ```
 
 Open **http://localhost:5273**.
 
+The app image is built by GitHub Actions on every push to `master` and published publicly to the GitHub Container Registry, so no login is needed:
+
+```
+ghcr.io/strangedroid/sitedockertest:latest
+```
+
+To build the image yourself from the source instead, run `docker compose up -d --build`.
+
 This starts two containers:
 
-| Service | Image | Purpose |
-|---|---|---|
-| `app` | built from `Dockerfile` | The Blazor web app (ports `5273`, `7041`) |
-| `db` | `postgres:16-alpine` | Database, stored in the `db-data` volume |
+| Service | Container | Image | Purpose |
+|---|---|---|---|
+| `app` | `flowers-app` | `ghcr.io/strangedroid/sitedockertest` | The Blazor web app (ports `5273`, `7041`) |
+| `db` | `flowers-db` | `postgres:16-alpine` | Database, stored in the `db-data` volume |
+
+Useful commands:
+
+```bash
+docker compose ps                 # status of both containers
+docker logs -f flowers-app        # app logs
+docker exec -it flowers-db psql -U flowers -d flowers_db   # database console
+```
+
+### Updating to a new version
+
+After new changes land on `master` and the GitHub Actions run finishes:
+
+```bash
+git pull                    # updated compose file and db/init scripts
+docker compose pull         # newest app image
+docker compose up -d        # recreate the app container; DB data is kept
+```
+
+To pin a specific build instead of `latest`, set `APP_TAG` in `.env` to a commit SHA (every image is also tagged with the commit it was built from).
 
 On first start the database is created and filled automatically from `db/init/`:
 
@@ -75,6 +104,7 @@ Set in `.env` (see `.env.example`):
 | `POSTGRES_DB` | `flowers_db` | Database name |
 | `POSTGRES_USER` | `flowers` | Database user |
 | `POSTGRES_PASSWORD` | `flowers` | Database password, **change it for production** |
+| `APP_TAG` | `latest` | App image tag on ghcr.io: `latest` or a commit SHA |
 
 The app reads its connection string from `ConnectionStrings:Default`. Compose passes it as the `ConnectionStrings__Default` environment variable.
 
@@ -170,11 +200,10 @@ erDiagram
 
 ## CI
 
-On every push to `master`, GitHub Actions builds the Docker image and publishes it to the GitHub Container Registry:
+GitHub Actions (`.github/workflows/docker-build.yml`) runs on every push and pull request:
 
-```
-ghcr.io/strangedroid/sitedockertest:latest
-```
+- **build-and-push** builds the Docker image. On pushes to `master` it also publishes it as `ghcr.io/strangedroid/sitedockertest:latest` and `:<commit-sha>`.
+- **smoke-test** starts the app and database with docker compose, checks that the database was seeded and that the site responds.
 
 ## Tech stack
 
