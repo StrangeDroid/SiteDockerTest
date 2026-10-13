@@ -37,13 +37,18 @@ Built with **Blazor Server (.NET 7)** and **PostgreSQL**, shipped as Docker cont
 
 Requirements: [Docker](https://docs.docker.com/get-docker/) with Docker Compose.
 
+The server only needs `docker-compose.yml` and a `.env` file:
+
 ```bash
-git clone https://github.com/StrangeDroid/SiteDockerTest.git
-cd SiteDockerTest
-cp .env.example .env        # set your own DB password
+mkdir flowers && cd flowers
+curl -O https://raw.githubusercontent.com/StrangeDroid/SiteDockerTest/master/docker-compose.yml
+curl -o .env https://raw.githubusercontent.com/StrangeDroid/SiteDockerTest/master/.env.example
+nano .env                   # set your own DB password
 docker compose pull         # download the published app image
 docker compose up -d
 ```
+
+(Or clone the whole repository, which also lets you build the image yourself.)
 
 Open **http://localhost:5273**.
 
@@ -53,7 +58,7 @@ The app image is built by GitHub Actions on every push to `master` and published
 ghcr.io/strangedroid/sitedockertest:latest
 ```
 
-To build the image yourself from the source instead, run `docker compose up -d --build`.
+To build the image yourself from a clone of the repository instead, run `docker compose up -d --build`.
 
 This starts two containers:
 
@@ -75,14 +80,13 @@ docker exec -it flowers-db psql -U flowers -d flowers_db   # database console
 After new changes land on `master` and the GitHub Actions run finishes:
 
 ```bash
-git pull                    # updated compose file and db/init scripts
 docker compose pull         # newest app image
 docker compose up -d        # recreate the app container; DB data is kept
 ```
 
 To pin a specific build instead of `latest`, set `APP_TAG` in `.env` to a commit SHA (every image is also tagged with the commit it was built from).
 
-On first start the database is created and filled automatically from `db/init/`:
+On startup the app checks the database, and if it has no tables yet it creates them and fills in the starting data. The SQL scripts are built into the app image from `BlazorApp1/Database/`:
 
 | File | Contents |
 |---|---|
@@ -90,7 +94,7 @@ On first start the database is created and filled automatically from `db/init/`:
 | `02-seed.sql` | The 12 flower types |
 | `03-questions.sql` | Test questions in Russian (3 per flower) |
 
-> The init scripts only run when the volume is empty. To recreate the database from scratch (**deletes all users and progress**):
+> The scripts only run when the database is empty; existing data is never touched. To recreate the database from scratch (**deletes all users and progress**):
 > ```bash
 > docker compose down -v && docker compose up -d
 > ```
@@ -116,7 +120,7 @@ Requirements: [.NET 7 SDK](https://dotnet.microsoft.com/download/dotnet/7.0) and
    ```bash
    docker compose up -d db
    ```
-2. Run the app (it uses the `localhost` connection string from `appsettings.Development.json`):
+2. Run the app (it uses the `localhost` connection string from `appsettings.Development.json` and creates the tables on first start):
    ```bash
    cd BlazorApp1
    dotnet run
@@ -124,14 +128,14 @@ Requirements: [.NET 7 SDK](https://dotnet.microsoft.com/download/dotnet/7.0) and
 
 ## Adding questions
 
-Add lines to `db/init/03-questions.sql` (or create a new `04-*.sql` file):
+Add lines to `BlazorApp1/Database/03-questions.sql` (or create a new `04-*.sql` file next to it):
 
 ```sql
 -- add_q(flower_type_id, question, correct answer, wrong 1, wrong 2, wrong 3)
 SELECT pg_temp.add_q(2, 'В каких единицах измеряется сила?', 'Ньютон', 'Джоуль', 'Ватт', 'Паскаль');
 ```
 
-Answers are stored in random order, so the correct one isn't always first. Then recreate the database (see above).
+Answers are stored in random order, so the correct one isn't always first. New questions are only added to a fresh database, so rebuild the app and recreate the database (see above).
 
 ## Database schema
 
@@ -188,11 +192,11 @@ erDiagram
 
 ```
 ├── BlazorApp1/
-│   ├── Data/            # Models, DB connection factory, user repository
+│   ├── Data/            # Models, DB connection, schema initializer, user repository
+│   ├── Database/        # SQL schema + seed data, applied to an empty DB on startup
 │   ├── Pages/           # Index (auto-login), RegistrationWindow, Game
 │   ├── Resources/       # ru / en localization (.resx)
 │   └── wwwroot/         # CSS, JS (cookies, audio), images, sounds
-├── db/init/             # SQL run on first DB start
 ├── Dockerfile           # Multi-stage build of the app image
 ├── docker-compose.yml   # app + PostgreSQL
 └── .github/workflows/   # Builds and pushes the image to GHCR

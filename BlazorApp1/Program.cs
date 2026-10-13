@@ -37,6 +37,9 @@ builder.Services.AddSingleton<DbConnectionFactory>();
 
 var app = builder.Build();
 
+// Создать таблицы и начальные данные, если БД пустая
+await DatabaseInitializer.InitializeAsync(app.Services.GetRequiredService<DbConnectionFactory>(), app.Logger);
+
 // Configure the supported cultures and the default culture
 var supportedCultures = new[] { "ru", "en" };
 var localizationOptions = new RequestLocalizationOptions()

@@ -9,8 +9,6 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-flowers}
     volumes:
       - db-data:/var/lib/postgresql/data
-      # *.sql here runs once, when the volume is empty
-      - ./db/init:/docker-entrypoint-initdb.d:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
       interval: 5s

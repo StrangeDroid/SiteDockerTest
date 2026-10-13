@@ -63,14 +63,6 @@ jobs:
       - name: Start containers
         run: docker compose up -d --build --wait
 
-      - name: Check database was seeded
-        run: |
-          types=$(docker compose exec -T db psql -U flowers -d flowers_db -tAc "SELECT count(*) FROM flowertypes")
-          questions=$(docker compose exec -T db psql -U flowers -d flowers_db -tAc "SELECT count(*) FROM questions")
-          echo "flower types: $types, questions: $questions"
-          test "$types" -eq 12
-          test "$questions" -gt 0
-
       - name: Check site responds
         run: |
           for i in $(seq 1 30); do
@@ -80,6 +72,14 @@ jobs:
             sleep 2
           done
           exit 1
+
+      - name: Check database was created by the app
+        run: |
+          types=$(docker compose exec -T db psql -U flowers -d flowers_db -tAc "SELECT count(*) FROM flowertypes")
+          questions=$(docker compose exec -T db psql -U flowers -d flowers_db -tAc "SELECT count(*) FROM questions")
+          echo "flower types: $types, questions: $questions"
+          test "$types" -eq 12
+          test "$questions" -gt 0
 
       - name: Show logs
         if: always()
