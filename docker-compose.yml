@@ -1,0 +1,37 @@
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-flowers_db}
+      POSTGRES_USER: ${POSTGRES_USER:-flowers}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-flowers}
+    volumes:
+      - db-data:/var/lib/postgresql/data
+      # *.sql here runs once, when the volume is empty
+      - ./db/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    # Uncomment to reach the DB from the host (e.g. running the app via `dotnet run`)
+    # ports:
+    #   - "5432:5432"
+
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      ConnectionStrings__Default: "Host=db;Port=5432;Database=${POSTGRES_DB:-flowers_db};Username=${POSTGRES_USER:-flowers};Password=${POSTGRES_PASSWORD:-flowers}"
+    ports:
+      - "5273:5273"
+      - "7041:7041"
+
+volumes:
+  db-data:

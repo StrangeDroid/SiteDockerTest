@@ -1,10 +1,11 @@
 ﻿@page "/registration"
-@using MySql.Data.MySqlClient
+@using Npgsql
 @inject NavigationManager Navigation
 @inject IJSRuntime JS
 @using Microsoft.Extensions.Localization
 @inject IStringLocalizer<RegistrationWindow> Localizer
 @using BlazorApp1.Data
+@inject DbConnectionFactory DbFactory
 @inject ICurrentUserService CurrentUserSvc
 @code {
     private bool isRegistering = false;
@@ -25,6 +26,16 @@
         isRegistering = true;
     }
 
+    private const int TokenLifetimeDays = 7;
+    // Типы цветов, которые получает новый игрок (слоты 0 и 1)
+    private static readonly int[] StarterFlowerTypes = { 8, 9 };
+
+    private void ShowError(string message)
+    {
+        errorMessage = message;
+        showError = true;
+    }
+
     private async Task SubmitLogin()
     {
         if (string.IsNullOrWhiteSpace(login) || string.IsNullOrWhiteSpace(password))
@@ -32,209 +43,164 @@
 
         try
         {
-            string connStr = "Server=31.31.197.28;Port=3310;Database=u3126643_flowers_db;User=u3126643_user_app;Password=xxxKKTX6815!;Charset=utf8mb4;SslMode=none;";
-            using var conn = new MySqlConnection(connStr);
+            using var conn = DbFactory.Create();
             await conn.OpenAsync();
 
-            var hash = HashPassword(password);
-
-            var cmd = new MySqlCommand("SELECT id, email, password_hash, coins FROM users WHERE username = @login", conn);
-            cmd.Parameters.AddWithValue("@login", login);
-            using var reader = await cmd.ExecuteReaderAsync();
-
-            if (await reader.ReadAsync())
+            int userId;
+            using (var cmd = new NpgsqlCommand("SELECT id, password_hash FROM users WHERE username = @login", conn))
             {
-                var storedHash = reader.GetString(2);
-                if (storedHash != hash)
+                cmd.Parameters.AddWithValue("@login", login);
+                using var reader = await cmd.ExecuteReaderAsync();
+                if (!await reader.ReadAsync())
                 {
-                    showError = true;
-                    errorMessage = "❌ Неверный пароль";
+                    ShowError("❌ Пользователь не найден");
                     return;
                 }
-
-                var userId = reader.GetInt32(0);
-                var email = reader.GetString(1);
-                var coins = reader.GetInt32(3);
-
-                // создать токен
-                // Удаление предыдущих токенов пользователя
-                reader.Close(); // обязательно закрыть перед новым запросом
-                var deleteCmd = new MySqlCommand("DELETE FROM authtokens WHERE user_id = @uid", conn);
-                deleteCmd.Parameters.AddWithValue("@uid", userId);
-                await deleteCmd.ExecuteNonQueryAsync();
-                var token = Guid.NewGuid().ToString();
-                var expires = DateTime.UtcNow.AddDays(7);
-
-                var insertCmd = new MySqlCommand("INSERT INTO authtokens (user_id, token, expires_at) VALUES (@uid, @token, @exp)", conn);
-                insertCmd.Parameters.AddWithValue("@uid", userId);
-                insertCmd.Parameters.AddWithValue("@token", token);
-                insertCmd.Parameters.AddWithValue("@exp", expires);
-                await insertCmd.ExecuteNonQueryAsync();
-
-
-                await JS.InvokeVoidAsync("CookieHelper.set", "authToken", token, 1);
-                CurrentUserSvc.User = await UserRepository.LoadUserById(userId, conn);
-                CurrentUserSvc.User.IsNewUser = false;
-
-
-                Navigation.NavigateTo("/main");
+                if (!PasswordHasher.Verify(password, reader.GetString(1)))
+                {
+                    ShowError("❌ Неверный пароль");
+                    return;
+                }
+                userId = reader.GetInt32(0);
             }
-            else
-            {
-                debug = "❌ Пользователь не найден";
-                showError = true;
-                errorMessage = debug;
 
-            }
+            await CreateSessionAsync(conn, userId);
+            CurrentUserSvc.User = await UserRepository.LoadUserById(userId, conn);
+            CurrentUserSvc.User.IsNewUser = false;
+
+            Navigation.NavigateTo("/main");
         }
         catch (Exception ex)
         {
-            debug = $"❌ Ошибка: {ex.Message}";
+            ShowError($"❌ Ошибка: {ex.Message}");
         }
     }
 
-    private static string HashPassword(string password)
+    // Заменяет старые токены пользователя новым и сохраняет его в cookie
+    private async Task CreateSessionAsync(NpgsqlConnection conn, int userId)
     {
-        using var sha256 = System.Security.Cryptography.SHA256.Create();
-        var bytes = System.Text.Encoding.UTF8.GetBytes(password);
-        var hash = sha256.ComputeHash(bytes);
-        return Convert.ToBase64String(hash);
+        using (var deleteCmd = new NpgsqlCommand("DELETE FROM authtokens WHERE user_id = @uid", conn))
+        {
+            deleteCmd.Parameters.AddWithValue("@uid", userId);
+            await deleteCmd.ExecuteNonQueryAsync();
+        }
+
+        var token = Guid.NewGuid().ToString();
+        using (var insertCmd = new NpgsqlCommand("INSERT INTO authtokens (user_id, token, expires_at) VALUES (@uid, @token, @exp)", conn))
+        {
+            insertCmd.Parameters.AddWithValue("@uid", userId);
+            insertCmd.Parameters.AddWithValue("@token", token);
+            insertCmd.Parameters.AddWithValue("@exp", DateTime.UtcNow.AddDays(TokenLifetimeDays));
+            await insertCmd.ExecuteNonQueryAsync();
+        }
+
+        await JS.InvokeVoidAsync("CookieHelper.set", "authToken", token, TokenLifetimeDays);
     }
+
     private async Task SubmitRegistration()
     {
         if (string.IsNullOrWhiteSpace(regUsername) || string.IsNullOrWhiteSpace(regPassword))
             return;
 
+        // Проверка email: обязателен и должен быть корректным
+        var email = regEmail?.Trim().ToLowerInvariant() ?? "";
+        if (email.Length == 0)
+        {
+            debug = "❗ Введите email";
+            return;
+        }
+        if (email.Length > 100 || !IsValidEmail(email))
+        {
+            debug = "❗ Некорректный email";
+            return;
+        }
+
         try
         {
-            string connStr = "Server=31.31.197.28;Port=3310;Database=u3126643_flowers_db;User=u3126643_user_app;Password=xxxKKTX6815!;Charset=utf8mb4;SslMode=none;";
-            using var conn = new MySqlConnection(connStr);
+            using var conn = DbFactory.Create();
             await conn.OpenAsync();
 
             // Проверка существующего имени
-            string checkQuery = "SELECT COUNT(*) FROM users WHERE username = @username";
-            using var checkCmd = new MySqlCommand(checkQuery, conn);
-            checkCmd.Parameters.AddWithValue("@username", regUsername);
-            var exists = Convert.ToInt32(await checkCmd.ExecuteScalarAsync()) > 0;
-            if (exists)
+            using (var checkCmd = new NpgsqlCommand("SELECT COUNT(*) FROM users WHERE username = @username", conn))
             {
-                debug = "❗ Такой пользователь уже существует";
-                return;
-            }
-
-            // Хэширование пароля
-            var passwordHash = HashPassword(regPassword);
-
-            // Вставка пользователя
-            string insertUserQuery = "INSERT INTO users (username, email, password_hash) VALUES (@username, @email, @password)";
-            using var insertCmd = new MySqlCommand(insertUserQuery, conn);
-            insertCmd.Parameters.AddWithValue("@username", regUsername);
-            insertCmd.Parameters.AddWithValue("@email", regEmail);
-            insertCmd.Parameters.AddWithValue("@password", passwordHash);
-            await insertCmd.ExecuteNonQueryAsync();
-
-            // Получаем ID нового пользователя
-            var userIdCmd = new MySqlCommand("SELECT LAST_INSERT_ID();", conn);
-            var userId = Convert.ToInt32(await userIdCmd.ExecuteScalarAsync());
-
-            // Создаём 3 фикуса и записываем в БД + в UserSession
-            var flowers = new List<Flower>();
-
-            var typesQuery = "SELECT id, name, code, price_buy, price_sell FROM flowertypes WHERE id = 8";
-            using var typeCmd = new MySqlCommand(typesQuery, conn);
-            using var typeReader = await typeCmd.ExecuteReaderAsync();
-
-            if (await typeReader.ReadAsync())
-            {
-                int typeId = typeReader.GetInt32(0);
-                string displayName = typeReader.GetString(1);
-                string codeName = typeReader.GetString(2);
-                int priceBuy = typeReader.GetInt32(3);      // ← добавлено
-                int priceSell = typeReader.GetInt32(4);     // ← добавлено
-
-                await typeReader.CloseAsync(); // ← await обязательно
-                var flowerInsert = new MySqlCommand(
-                "INSERT INTO flowers (user_id, type_id, hp, pot_slot) VALUES (@uid, @type, @hp, @slot)", conn);
-                flowerInsert.Parameters.AddWithValue("@uid", userId);
-                flowerInsert.Parameters.AddWithValue("@type", typeId);
-                flowerInsert.Parameters.AddWithValue("@hp", 9);
-                flowerInsert.Parameters.AddWithValue("@slot", 0);
-                await flowerInsert.ExecuteNonQueryAsync();
-
-                // Добавление в список в C#
-                flowers.Add(new Flower
-                    {
-                        TypeId = typeId,
-                        DisplayName = displayName,
-                        CodeName = codeName,
-                        Hp = 9,
-                        MaxHp = 15,
-                        Slot = 0,
-                        PriceBuy = priceBuy,     // ← добавлено
-                        PriceSell = priceSell    // ← добавлено
-                    });
-                var flowerInsert2 = new MySqlCommand(
-                "INSERT INTO flowers (user_id, type_id, hp, pot_slot) VALUES (@uid, @type, @hp, @slot)", conn);
-                flowerInsert2.Parameters.AddWithValue("@uid", userId);
-                flowerInsert2.Parameters.AddWithValue("@type", typeId+1);
-                flowerInsert2.Parameters.AddWithValue("@hp", 9);
-                flowerInsert2.Parameters.AddWithValue("@slot", 1);
-                await flowerInsert2.ExecuteNonQueryAsync();
-
-                // Добавление в список в C#
-                flowers.Add(new Flower
-                    {
-                        TypeId = typeId+1,
-                        DisplayName = displayName,
-                        CodeName = codeName,
-                        Hp = 9,
-                        MaxHp = 15,
-                        Slot = 1,
-                        PriceBuy = priceBuy,     // ← добавлено
-                        PriceSell = priceSell    // ← добавлено
-                    });
-
-            }
-            CurrentUserSvc.User = new User
+                checkCmd.Parameters.AddWithValue("@username", regUsername);
+                if (Convert.ToInt32(await checkCmd.ExecuteScalarAsync()) > 0)
                 {
-                    Id = userId,
-                    Username = regUsername,
-                    Email = regEmail,
-                    PasswordHash = passwordHash,
-                    Coins = 0,
-                    Flowers = flowers
-                };
+                    debug = "❗ Такой пользователь уже существует";
+                    return;
+                }
+            }
 
+            // Проверка существующего email
+            using (var emailCheckCmd = new NpgsqlCommand("SELECT COUNT(*) FROM users WHERE LOWER(email) = @email", conn))
+            {
+                emailCheckCmd.Parameters.AddWithValue("@email", email);
+                if (Convert.ToInt32(await emailCheckCmd.ExecuteScalarAsync()) > 0)
+                {
+                    debug = "❗ Этот email уже зарегистрирован";
+                    return;
+                }
+            }
+
+            // Пользователь, стартовые цветы и токен создаются вместе или не создаются вовсе
+            using var tx = await conn.BeginTransactionAsync();
+
+            int userId;
+            using (var insertCmd = new NpgsqlCommand("INSERT INTO users (username, email, password_hash) VALUES (@username, @email, @password) RETURNING id", conn))
+            {
+                insertCmd.Parameters.AddWithValue("@username", regUsername);
+                insertCmd.Parameters.AddWithValue("@email", email);
+                insertCmd.Parameters.AddWithValue("@password", PasswordHasher.Hash(regPassword));
+                userId = Convert.ToInt32(await insertCmd.ExecuteScalarAsync());
+            }
+
+            for (int slot = 0; slot < StarterFlowerTypes.Length; slot++)
+            {
+                using var flowerInsert = new NpgsqlCommand("INSERT INTO flowers (user_id, type_id, hp, pot_slot) VALUES (@uid, @type, @hp, @slot)", conn);
+                flowerInsert.Parameters.AddWithValue("@uid", userId);
+                flowerInsert.Parameters.AddWithValue("@type", StarterFlowerTypes[slot]);
+                flowerInsert.Parameters.AddWithValue("@hp", 9);
+                flowerInsert.Parameters.AddWithValue("@slot", slot);
+                await flowerInsert.ExecuteNonQueryAsync();
+            }
+
+            await CreateSessionAsync(conn, userId);
+            await tx.CommitAsync();
+
+            // Загружаем из БД, чтобы у цветов были настоящие id, названия и цены
+            CurrentUserSvc.User = await UserRepository.LoadUserById(userId, conn);
             CurrentUserSvc.User.IsNewUser = true;
-
-            // ❗ Удаляем старые токены на всякий случай (если регаешься повторно под тем же user_id)
-            var deleteCmd = new MySqlCommand("DELETE FROM authtokens WHERE user_id = @uid", conn);
-            deleteCmd.Parameters.AddWithValue("@uid", userId);
-            await deleteCmd.ExecuteNonQueryAsync();
-            // Генерация токена
-            var token = Guid.NewGuid().ToString();
-            var expires = DateTime.UtcNow.AddDays(7); // 7 дней
-
-            // Вставка токена
-            var insertTokenCmd = new MySqlCommand("INSERT INTO authtokens (user_id, token, expires_at) VALUES (@uid, @token, @exp)", conn);
-            insertTokenCmd.Parameters.AddWithValue("@uid", userId);
-            insertTokenCmd.Parameters.AddWithValue("@token", token);
-            insertTokenCmd.Parameters.AddWithValue("@exp", expires);
-            await insertTokenCmd.ExecuteNonQueryAsync();
-
-            // Сохраняем токен в localStorage (через JS позже)
-            await JS.InvokeVoidAsync("CookieHelper.set", "authToken", token, 1);
 
             debug = "✅ Регистрация завершена";
             isRegistering = false;
             Navigation.NavigateTo("/main");
         }
+        catch (PostgresException ex) when (ex.SqlState == PostgresErrorCodes.UniqueViolation)
+        {
+            // Одновременная регистрация с тем же именем/email
+            debug = ex.ConstraintName == "ux_users_email"
+                ? "❗ Этот email уже зарегистрирован"
+                : "❗ Такой пользователь уже существует";
+        }
         catch (Exception ex)
         {
+            // Форма остаётся открытой, чтобы ошибка была видна
             debug = $"❌ Ошибка: {ex.Message}";
         }
+    }
 
-        isRegistering = false;
+    private static bool IsValidEmail(string email)
+    {
+        try
+        {
+            var addr = new System.Net.Mail.MailAddress(email);
+            // MailAddress принимает и "Имя <a@b.ru>", поэтому сверяем адрес целиком
+            return addr.Address == email && email.Contains('.', StringComparison.Ordinal);
+        }
+        catch (FormatException)
+        {
+            return false;
+        }
     }
 
 }
@@ -273,7 +239,7 @@ else
         <h3 class="modal-title">Регистрация</h3>
         <div class="modal-form">
             <input @bind="regUsername" placeholder="Имя пользователя" />
-            <input @bind="regEmail" placeholder="Email" />
+            <input @bind="regEmail" type="email" placeholder="Email" required />
             <input @bind="regPassword" type="password" placeholder="Пароль" />
             <div class="button-container">
                 <button class="primary-btn" @onclick="SubmitRegistration">Зарегистрироваться</button>

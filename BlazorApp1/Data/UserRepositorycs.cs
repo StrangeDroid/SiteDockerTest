@@ -1,15 +1,15 @@
-﻿using MySql.Data.MySqlClient;
+﻿using Npgsql;
 
 namespace BlazorApp1.Data
 {
     public static class UserRepository
     {
-        public static async Task<User> LoadUserById(int userId, MySqlConnection conn)
+        public static async Task<User> LoadUserById(int userId, NpgsqlConnection conn)
         {
             var user = new User();
 
             // 1. Получаем пользователя
-            var userCmd = new MySqlCommand("SELECT id, username, email, password_hash, coins FROM users WHERE id = @uid", conn);
+            var userCmd = new NpgsqlCommand("SELECT id, username, email, password_hash, coins FROM users WHERE id = @uid", conn);
             userCmd.Parameters.AddWithValue("@uid", userId);
             using var reader = await userCmd.ExecuteReaderAsync();
             if (await reader.ReadAsync())
@@ -24,7 +24,7 @@ namespace BlazorApp1.Data
 
             // 2. Загружаем цветы + данные типов
             var flowers = new List<Flower>();
-            var flowerCmd = new MySqlCommand(@"
+            var flowerCmd = new NpgsqlCommand(@"
         SELECT f.id, f.hp, f.pot_slot, f.type_id, t.name, t.code, t.price_buy, t.price_sell
         FROM flowers f
         JOIN flowertypes t ON f.type_id = t.id

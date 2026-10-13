@@ -1,6 +1,5 @@
 ﻿using BlazorApp1.Data;
 using Microsoft.AspNetCore.Components;
-using Microsoft.AspNetCore.Components.Authorization;
 using Microsoft.AspNetCore.Components.Web;
 using Microsoft.AspNetCore.Localization;
 using System.Globalization;
@@ -18,9 +17,6 @@ builder.Services.AddRazorPages();
 builder.Services.AddServerSideBlazor();
 
 
-builder.Services.AddScoped<AuthenticationStateProvider, CookieAuthStateProvider>();
-builder.Services.AddAuthorizationCore();
-
 builder.Services.Configure<RequestLocalizationOptions>(options =>
 {
     var supportedCultures = new[] { new CultureInfo("ru"), new CultureInfo("en") };
@@ -35,6 +31,9 @@ builder.Services
   .AddHttpContextAccessor()
   // register the per-circuit user holder
   .AddScoped<ICurrentUserService, CurrentUserService>();
+
+// Подключение к БД (строка подключения: ConnectionStrings:Default / env ConnectionStrings__Default)
+builder.Services.AddSingleton<DbConnectionFactory>();
 
 var app = builder.Build();
 

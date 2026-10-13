@@ -1,8 +1,9 @@
 ﻿@page "/"
 @inject IJSRuntime JS
 @inject NavigationManager Navigation
-@using MySql.Data.MySqlClient
+@using Npgsql
 @using BlazorApp1.Data
+@inject DbConnectionFactory DbFactory
 @using System.Diagnostics;
 @inject ICurrentUserService CurrentUserSvc
 
@@ -11,9 +12,15 @@
 
     protected override async Task OnAfterRenderAsync(bool firstRender)
     {
+        if (!firstRender)
+            return;
+
         var token = await JS.InvokeAsync<string>("CookieHelper.get", "authToken");
         if (string.IsNullOrWhiteSpace(token))
+        {
             NavigateToRegistration();
+            return;
+        }
 
         await CheckTokenInDb(token);
     }
@@ -22,10 +29,9 @@
     {
         try
         {
-            var connStr = "Server=31.31.197.28;Port=3310;Database=u3126643_flowers_db;User=u3126643_user_app;Password=xxxKKTX6815!;Charset=utf8mb4;SslMode=none;";
-            using var conn = new MySqlConnection(connStr);
+            using var conn = DbFactory.Create();
             await conn.OpenAsync();
-            var cmd = new MySqlCommand(@"
+            var cmd = new NpgsqlCommand(@"
              SELECT u.id, u.username, u.email, u.password_hash, u.coins
              FROM authtokens a
             JOIN users u ON a.user_id = u.id
